@@ -367,8 +367,8 @@ type PRComment struct {
 // pipeline-owned validation comment. ListPRComments must return a complete
 // list or fail; a partial page is never absence. CreatePRComment and
 // UpdatePRComment must return the settled raw comment and verify that it still
-// belongs to pr. Ownership, duplicate detection, and read-after-write
-// settlement live in the pipeline so every provider follows one policy.
+// belongs to pr. Durable provider-ID binding and read-after-write settlement
+// live in the pipeline so every provider follows one policy.
 type ManagedPRCommentHost interface {
 	ListPRComments(ctx context.Context, pr *PR) ([]PRComment, error)
 	CreatePRComment(ctx context.Context, pr *PR, body string) (PRComment, error)

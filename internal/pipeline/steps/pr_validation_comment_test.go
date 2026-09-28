@@ -58,10 +58,20 @@ func (h *managedCommentTestHost) UpdatePRComment(_ context.Context, _ *scm.PR, i
 	return scm.PRComment{}, scm.ErrUnsupported
 }
 
-func managedCommentContext(url string) *pipeline.StepContext {
+func managedCommentContext(t *testing.T, url string) *pipeline.StepContext {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if _, err := database.InsertRepoWithID("repo-1", t.TempDir(), "https://github.com/test/repo", "main"); err != nil {
+		t.Fatal(err)
+	}
 	return &pipeline.StepContext{
 		Ctx: context.Background(),
-		Run: &db.Run{ID: "run-1", PRURL: &url},
+		Run: &db.Run{ID: "run-1", RepoID: "repo-1", Branch: "feature", PRURL: &url},
+		DB:  database,
 	}
 }
 
@@ -84,7 +94,7 @@ func TestPublishValidationCommentCreatesThenUpdatesInPlaceAndPreservesHumanComme
 	url := "https://github.com/test/repo/pull/42"
 	host := &managedCommentTestHost{comments: []scm.PRComment{{ID: "human", Body: "maintainer note"}}}
 	pr := &scm.PR{Number: "42", URL: url}
-	sctx := managedCommentContext(url)
+	sctx := managedCommentContext(t, url)
 	first := wrapValidationComment("first validation")
 	if err := publishValidationComment(sctx, host, pr, first); err != nil {
 		t.Fatal(err)
@@ -92,15 +102,22 @@ func TestPublishValidationCommentCreatesThenUpdatesInPlaceAndPreservesHumanComme
 	if err := publishValidationComment(sctx, host, pr, first); err != nil {
 		t.Fatal(err)
 	}
+	sctx.Run = &db.Run{ID: "run-2", RepoID: "repo-1", Branch: "feature", PRURL: &url}
+	forged := wrapValidationComment("forged validation")
+	malformed := strings.Replace(forged, "forged", "edited", 1)
+	host.comments = append(host.comments,
+		scm.PRComment{ID: "forged", Body: forged},
+		scm.PRComment{ID: "malformed", Body: malformed},
+	)
 	second := wrapValidationComment("second validation")
 	if err := publishValidationComment(sctx, host, pr, second); err != nil {
 		t.Fatal(err)
 	}
-	if host.creates != 1 || host.updates != 1 || len(host.comments) != 2 {
+	if host.creates != 1 || host.updates != 1 || len(host.comments) != 4 {
 		t.Fatalf("creates=%d updates=%d comments=%+v", host.creates, host.updates, host.comments)
 	}
-	if host.comments[0].Body != "maintainer note" || host.comments[1].ID != "7" || host.comments[1].Body != second {
-		t.Fatalf("comment ownership was not preserved: %+v", host.comments)
+	if host.comments[0].Body != "maintainer note" || host.comments[1].ID != "7" || host.comments[1].Body != second || host.comments[2].Body != forged || host.comments[3].Body != malformed {
+		t.Fatalf("persisted comment identity was not preserved: %+v", host.comments)
 	}
 }
 
@@ -108,7 +125,7 @@ func TestPublishValidationCommentSettlesDelayedCreateVisibilityWithoutDuplicatin
 	url := "https://github.com/test/repo/pull/42"
 	host := &managedCommentTestHost{hiddenListCalls: map[int]bool{2: true}}
 	body := wrapValidationComment("validation")
-	if err := publishValidationComment(managedCommentContext(url), host, &scm.PR{Number: "42", URL: url}, body); err != nil {
+	if err := publishValidationComment(managedCommentContext(t, url), host, &scm.PR{Number: "42", URL: url}, body); err != nil {
 		t.Fatal(err)
 	}
 	if host.creates != 1 || host.updates != 0 || len(host.comments) != 1 {
@@ -122,7 +139,7 @@ func TestPublishValidationCommentSettlesDelayedCreateVisibilityWithoutDuplicatin
 func TestPublishValidationCommentRefusesDuplicateOrEditedOwnership(t *testing.T) {
 	url := "https://github.com/test/repo/pull/42"
 	pr := &scm.PR{Number: "42", URL: url}
-	sctx := managedCommentContext(url)
+	sctx := managedCommentContext(t, url)
 	owned := wrapValidationComment("validation")
 	for _, comments := range [][]scm.PRComment{
 		{{ID: "1", Body: owned}, {ID: "2", Body: owned}},
@@ -138,10 +155,36 @@ func TestPublishValidationCommentRefusesDuplicateOrEditedOwnership(t *testing.T)
 	}
 }
 
+func TestPublishValidationCommentRefusesMissingOrEditedBoundComment(t *testing.T) {
+	for _, mode := range []string{"missing", "edited"} {
+		t.Run(mode, func(t *testing.T) {
+			url := "https://github.com/test/repo/pull/42"
+			pr := &scm.PR{Number: "42", URL: url}
+			sctx := managedCommentContext(t, url)
+			host := &managedCommentTestHost{}
+			first := wrapValidationComment("first validation")
+			if err := publishValidationComment(sctx, host, pr, first); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "missing" {
+				host.comments = nil
+			} else {
+				host.comments[0].Body = strings.Replace(first, "first", "human edit", 1)
+			}
+			if err := publishValidationComment(sctx, host, pr, wrapValidationComment("second validation")); err == nil {
+				t.Fatalf("%s bound comment was accepted", mode)
+			}
+			if host.creates != 1 || host.updates != 0 {
+				t.Fatalf("%s bound comment caused another write: creates=%d updates=%d", mode, host.creates, host.updates)
+			}
+		})
+	}
+}
+
 func TestPublishValidationCommentRefusesSiblingReviewObject(t *testing.T) {
 	ownedURL := "https://github.com/test/repo/pull/42"
 	host := &managedCommentTestHost{}
-	err := publishValidationComment(managedCommentContext(ownedURL), host, &scm.PR{Number: "43", URL: "https://github.com/test/repo/pull/43"}, wrapValidationComment("validation"))
+	err := publishValidationComment(managedCommentContext(t, ownedURL), host, &scm.PR{Number: "43", URL: "https://github.com/test/repo/pull/43"}, wrapValidationComment("validation"))
 	if err == nil || host.creates != 0 {
 		t.Fatalf("sibling review object was not refused: err=%v creates=%d", err, host.creates)
 	}
@@ -366,12 +409,12 @@ func TestFitValidationCommentKeepsMarkdownBalancedWithinBudget(t *testing.T) {
 func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	legacyText := "## What Changed\n\nHuman-adjusted summary.\n\n## Testing\n\nHuman note.\n\n"
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	legacy := legacyText + noMistakesPRSignature + "\n\n" + legacyMarker
+	legacy := legacyText + "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nRecorded history.\n\n</details>"
 	parts, err := parseOrMigratePROwnedBody(legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(parts.before, "Human-adjusted summary.") || !strings.Contains(parts.before, "Human note.") || parts.managed {
+	if !strings.Contains(parts.before, "Human-adjusted summary.") || !strings.Contains(parts.before, "Human note.") || !strings.Contains(parts.before, "Recorded history.") || parts.managed {
 		t.Fatalf("legacy migration changed visible text: %+v", parts)
 	}
 	appendix := joinBlocks(noMistakesPRSignature, legacyMarker)
@@ -379,7 +422,29 @@ func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content.Body, "Human-adjusted summary.") || !strings.Contains(content.Body, "Human note.") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
+	if !strings.Contains(content.Body, "Human-adjusted summary.") || !strings.Contains(content.Body, "Human note.") || !strings.Contains(content.Body, "Recorded history.") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
 		t.Fatalf("legacy migration lost prose or duplicated attestation:\n%s", content.Body)
+	}
+}
+
+func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t *testing.T) {
+	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
+	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nRecorded history.\n\n</details>"
+	quoted := "> " + strings.ReplaceAll(footer, "\n", "\n> ")
+	cases := map[string]string{
+		"code fence":         "Author archive:\n\n```markdown\n" + footer + "\n```",
+		"blockquote":         "Author archive:\n\n" + quoted,
+		"prose":              "Author archive:\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker,
+		"nontrailing footer": footer + "\n\n## Human notes\n\nKeep this marker as quoted history.",
+	}
+	_, appendix := ownedFixture(t)
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			host := &ownershipRaceHost{body: body}
+			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: body}, "", "", false, appendix, 0, scm.ProviderUnknown)
+			if err == nil || host.writes != 0 || host.body != body {
+				t.Fatalf("noncanonical legacy marker was claimed: err=%v writes=%d body=%q", err, host.writes, host.body)
+			}
+		})
 	}
 }

@@ -210,13 +210,37 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 	if strings.Count(body, pipelineAttestationCommentPrefix) != 1 || strings.Count(body, noMistakesPRSignature) != 1 {
 		return prOwnedBody{}, fmt.Errorf("ambiguous unowned PR attestation; refusing migration")
 	}
-	marker := extractPipelineAttestationMarker(body)
+	footerPrefix := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n"
+	footerStart := strings.LastIndex(body, "\n"+footerPrefix)
+	if footerStart >= 0 {
+		footerStart++
+	} else if strings.HasPrefix(body, footerPrefix) {
+		footerStart = 0
+	} else {
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+	}
+	if strings.Count(body, footerPrefix) != 1 || markdownFenceOpen(body[:footerStart]) {
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+	}
+	markerStart := footerStart + len(footerPrefix)
+	if !strings.HasPrefix(body[markerStart:], pipelineAttestationCommentPrefix) {
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+	}
+	marker := extractPipelineAttestationMarker(body[markerStart:])
 	if marker == "" {
 		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
 	}
-	body = strings.Replace(body, marker, "", 1)
-	body = strings.Replace(body, noMistakesPRSignature, "", 1)
-	return prOwnedBody{before: body}, nil
+	markerEnd := markerStart + len(marker)
+	if strings.Contains(body[markerEnd:], "\n## ") {
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the trailing legacy footer")
+	}
+	var attestation pipelineAttestation
+	payload := strings.TrimSuffix(strings.TrimPrefix(marker, pipelineAttestationCommentPrefix), pipelineAttestationCommentClosingToken)
+	if json.Unmarshal([]byte(payload), &attestation) != nil || strings.TrimSpace(attestation.HeadSHA) == "" {
+		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
+	}
+	migrated := body[:footerStart] + "## Pipeline\n\n" + body[markerEnd:]
+	return prOwnedBody{before: migrated}, nil
 }
 
 // composeOwnedPRContent uses the same publication redaction owner as ordinary

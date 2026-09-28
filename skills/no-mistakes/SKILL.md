@@ -306,7 +306,8 @@ review them.
 The published PR/MR description is intentionally a concise squash-commit-style
 narrative plus a compact machine attestation. Validation selected by the
 repository's trusted publication policy lives in one pipeline-owned comment
-that no-mistakes updates in place. Do not copy logs back into the description,
+whose exact provider identity no-mistakes persists and updates in place. Do not
+copy logs back into the description,
 edit the owned comment, or remove the description trailer; report the forge URL
 and let the publication surfaces keep their separate ownership.
 

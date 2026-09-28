@@ -180,6 +180,16 @@ CREATE TABLE IF NOT EXISTS run_media_attachments (
     PRIMARY KEY (run_id, path)
 );
 
+CREATE TABLE IF NOT EXISTS managed_pr_comments (
+    repo_id     TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    provider    TEXT NOT NULL,
+    pr_number   TEXT NOT NULL,
+    pr_url      TEXT NOT NULL,
+    comment_id  TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, provider, pr_number)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,

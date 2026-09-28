@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -258,21 +259,21 @@ func parseValidationComment(comment scm.PRComment) (ownedValidationComment, bool
 	return ownedValidationComment{comment: comment, content: content}, true, nil
 }
 
-func findOwnedValidationComment(comments []scm.PRComment) (*ownedValidationComment, error) {
+func findBoundValidationComment(comments []scm.PRComment, commentID string) (*ownedValidationComment, error) {
 	var found *ownedValidationComment
 	for _, comment := range comments {
+		if strings.TrimSpace(comment.ID) != commentID {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("provider returned the bound validation comment more than once")
+		}
 		owned, ok, err := parseValidationComment(comment)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			continue
-		}
-		if strings.TrimSpace(comment.ID) == "" {
-			return nil, fmt.Errorf("managed validation comment has no durable provider identity")
-		}
-		if found != nil {
-			return nil, fmt.Errorf("multiple pipeline-owned validation comments found; refusing an ambiguous update")
+			return nil, fmt.Errorf("bound validation comment no longer carries its ownership markers")
 		}
 		copy := owned
 		found = &copy
@@ -280,11 +281,42 @@ func findOwnedValidationComment(comments []scm.PRComment) (*ownedValidationComme
 	return found, nil
 }
 
-// publishValidationComment is idempotent and fail-closed. A write that returns
-// an error is never blindly replayed: the comment list is re-read first, so an
-// ambiguously applied create/update can settle without creating a duplicate.
-// Exact read-after-write verification also catches provider truncation and a
-// comment moved to a sibling review object.
+func refuseUnboundValidationMarkers(comments []scm.PRComment) error {
+	for _, comment := range comments {
+		if validationCommentMarkerPattern.MatchString(comment.Body) {
+			return fmt.Errorf("validation comment ownership marker has no persisted provider identity")
+		}
+	}
+	return nil
+}
+
+func managedValidationCommentBinding(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR) (*db.ManagedPRCommentBinding, string, error) {
+	if sctx == nil || sctx.DB == nil || sctx.Run == nil || strings.TrimSpace(sctx.Run.RepoID) == "" {
+		return nil, "", fmt.Errorf("validation comment publication requires durable repository state")
+	}
+	number := strings.TrimSpace(pr.Number)
+	if number == "" {
+		var err error
+		number, err = scm.ExtractPRNumber(pr.URL)
+		if err != nil || strings.TrimSpace(number) == "" {
+			return nil, "", fmt.Errorf("validation comment publication requires an exact pull request number")
+		}
+	}
+	binding, err := sctx.DB.GetManagedPRCommentBinding(sctx.Run.RepoID, string(host.Provider()), number)
+	if err != nil {
+		return nil, "", err
+	}
+	if binding != nil && !samePRIdentity(binding.PRURL, pr) {
+		return nil, "", fmt.Errorf("persisted validation comment belongs to sibling pull request %s", binding.PRURL)
+	}
+	return binding, number, nil
+}
+
+// publishValidationComment is idempotent and fail-closed. A successful create
+// persists its exact provider ID before settlement; a create error cannot prove
+// ownership and is not replayed. An update error is reconciled only against the
+// already-bound ID. Exact read-after-write verification also catches provider
+// truncation and a comment moved to a sibling review object.
 func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, body string) error {
 	if host == nil || pr == nil {
 		return fmt.Errorf("validation comment publication requires a pull request identity")
@@ -303,30 +335,52 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		return fmt.Errorf("validation comment exceeds the shared provider budget")
 	}
 
+	binding, prNumber, err := managedValidationCommentBinding(sctx, host, pr)
+	if err != nil {
+		return err
+	}
 	comments, err := commentsHost.ListPRComments(sctx.Ctx, pr)
 	if err != nil {
 		return fmt.Errorf("list validation comments: %w", err)
 	}
-	owned, err := findOwnedValidationComment(comments)
-	if err != nil {
-		return err
-	}
-	if owned != nil && owned.comment.Body == body {
+	if binding == nil {
+		if err := refuseUnboundValidationMarkers(comments); err != nil {
+			return err
+		}
+		created, err := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+		if err != nil {
+			return fmt.Errorf("create validation comment: %w", err)
+		}
+		if strings.TrimSpace(created.ID) == "" || created.Body != body {
+			return fmt.Errorf("create validation comment returned an incomplete settled identity")
+		}
+		if _, ok, err := parseValidationComment(created); err != nil {
+			return fmt.Errorf("create validation comment returned invalid ownership: %w", err)
+		} else if !ok {
+			return fmt.Errorf("create validation comment returned no ownership markers")
+		}
+		binding = &db.ManagedPRCommentBinding{
+			RepoID: sctx.Run.RepoID, Provider: string(host.Provider()), PRNumber: prNumber,
+			PRURL: pr.URL, CommentID: created.ID,
+		}
+		if err := sctx.DB.BindManagedPRComment(*binding); err != nil {
+			return err
+		}
+		if err := verifyValidationComment(sctx, commentsHost, pr, binding.CommentID, body); err != nil {
+			return fmt.Errorf("verify created validation comment: %w", err)
+		}
 		return nil
 	}
 
+	owned, err := findBoundValidationComment(comments, binding.CommentID)
+	if err != nil {
+		return err
+	}
 	if owned == nil {
-		created, writeErr := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
-		if writeErr == nil && (strings.TrimSpace(created.ID) == "" || created.Body != body) {
-			return fmt.Errorf("create validation comment returned an incomplete settled identity")
-		}
-		if err := verifyValidationComment(sctx, commentsHost, pr, body); err == nil {
-			return nil
-		} else if writeErr != nil {
-			return fmt.Errorf("create validation comment: %w (settlement check: %v)", writeErr, err)
-		} else {
-			return fmt.Errorf("verify created validation comment: %w", err)
-		}
+		return fmt.Errorf("persisted validation comment %s is missing; refusing to create a replacement", binding.CommentID)
+	}
+	if owned.comment.Body == body {
+		return nil
 	}
 
 	// Providers expose full comment writes rather than compare-and-swap. Re-read
@@ -335,18 +389,18 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 	if err != nil {
 		return fmt.Errorf("re-read validation comments before update: %w", err)
 	}
-	current, err := findOwnedValidationComment(latest)
+	current, err := findBoundValidationComment(latest, binding.CommentID)
 	if err != nil {
 		return err
 	}
-	if current == nil || current.comment.ID != owned.comment.ID || current.comment.Body != owned.comment.Body {
+	if current == nil || current.comment.Body != owned.comment.Body {
 		return fmt.Errorf("validation comment changed while preparing update; no write performed")
 	}
-	updated, writeErr := commentsHost.UpdatePRComment(sctx.Ctx, pr, owned.comment.ID, body)
-	if writeErr == nil && (updated.ID != owned.comment.ID || updated.Body != body) {
+	updated, writeErr := commentsHost.UpdatePRComment(sctx.Ctx, pr, binding.CommentID, body)
+	if writeErr == nil && (updated.ID != binding.CommentID || updated.Body != body) {
 		return fmt.Errorf("update validation comment returned a different settled identity")
 	}
-	if err := verifyValidationComment(sctx, commentsHost, pr, body); err == nil {
+	if err := verifyValidationComment(sctx, commentsHost, pr, binding.CommentID, body); err == nil {
 		return nil
 	} else if writeErr != nil {
 		return fmt.Errorf("update validation comment: %w (settlement check: %v)", writeErr, err)
@@ -355,14 +409,14 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 	}
 }
 
-func verifyValidationComment(sctx *pipeline.StepContext, host scm.ManagedPRCommentHost, pr *scm.PR, body string) error {
+func verifyValidationComment(sctx *pipeline.StepContext, host scm.ManagedPRCommentHost, pr *scm.PR, commentID, body string) error {
 	var lastErr error
 	for attempt := 0; attempt < validationSettlementReads; attempt++ {
 		comments, err := host.ListPRComments(sctx.Ctx, pr)
 		if err != nil {
 			lastErr = err
 		} else {
-			owned, err := findOwnedValidationComment(comments)
+			owned, err := findBoundValidationComment(comments, commentID)
 			if err != nil {
 				return err
 			}
