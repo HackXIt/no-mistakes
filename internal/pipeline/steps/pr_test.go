@@ -757,6 +757,39 @@ func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
 	}
 }
 
+func TestPRStep_ConfiguredTitleRejectsBodyRepeatingBareTitle(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+
+	env, _ := fakeGH(t, "")
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile)
+	ag := &mockAgent{
+		name: "test",
+		runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+			return &agent.Result{Output: json.RawMessage(`{"title":"Add managed comments","body":"Add managed comments"}`)}, nil
+		},
+	}
+	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Config.PR.TitleFormat = "[ABC] {{.Title}}"
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := parsePROwnedBody(string(body))
+	if err != nil || strings.TrimSpace(parts.before) != "Updates the final branch delta." {
+		t.Fatalf("duplicate bare title was published instead of the concise fallback: %q (%v)", body, err)
+	}
+}
+
 func TestPRStep_UnwrapsNestedJSONBody(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

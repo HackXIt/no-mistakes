@@ -536,7 +536,7 @@ Final diff paths and statuses:
 				if content.Title != originalTitle {
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
-				normalizedBody, valid := normalizeSquashDescription(content.Body, content.Title)
+				normalizedBody, valid := normalizeSquashDescription(content.Body, content.Title, originalTitle)
 				content.Body = neutralizeAttestationMarkers(normalizedBody)
 				if !valid {
 					return fallbackPRContent(sctx, finalDiff, bodyLimit)
@@ -601,7 +601,7 @@ Final diff paths and statuses:
 // structural contract and never passes through here. Invalid model output uses
 // the deterministic concise fallback rather than publishing logs or a second
 // long-form narrative surface.
-func normalizeSquashDescription(body, title string) (string, bool) {
+func normalizeSquashDescription(body string, titles ...string) (string, bool) {
 	body = strings.TrimSpace(body)
 	lines := strings.Split(body, "\n")
 	if len(lines) == 0 {
@@ -652,7 +652,7 @@ func normalizeSquashDescription(body, title string) (string, bool) {
 		bullets := make([]string, 0, len(nonempty))
 		for _, line := range nonempty {
 			text := strings.TrimSpace(line[2:])
-			if text == "" || len(text) > maxSquashDescriptionBulletBytes || repeatsPRTitle(text, title) {
+			if text == "" || len(text) > maxSquashDescriptionBulletBytes || repeatsPRTitle(text, titles...) {
 				return "", false
 			}
 			bullets = append(bullets, "- "+text)
@@ -670,7 +670,7 @@ func normalizeSquashDescription(body, title string) (string, bool) {
 		}
 	}
 	paragraph := strings.Join(nonempty, " ")
-	if repeatsPRTitle(paragraph, title) || len(paragraph) > maxSquashDescriptionBytes {
+	if repeatsPRTitle(paragraph, titles...) || len(paragraph) > maxSquashDescriptionBytes {
 		return "", false
 	}
 	return paragraph, true
@@ -684,13 +684,19 @@ func numberedListLine(line string) bool {
 	return i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && line[i+1] == ' '
 }
 
-func repeatsPRTitle(body, title string) bool {
+func repeatsPRTitle(body string, titles ...string) bool {
 	normalize := func(value string) string {
 		value = strings.TrimSpace(value)
 		value = strings.TrimSuffix(value, ".")
 		return strings.Join(strings.Fields(value), " ")
 	}
-	return title != "" && strings.EqualFold(normalize(body), normalize(title))
+	body = normalize(body)
+	for _, title := range titles {
+		if title != "" && strings.EqualFold(body, normalize(title)) {
+			return true
+		}
+	}
+	return false
 }
 
 func prTitlePromptRules(sctx *pipeline.StepContext) string {
