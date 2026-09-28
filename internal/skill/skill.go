@@ -307,9 +307,9 @@ The published PR/MR description is intentionally a concise squash-commit-style
 narrative plus a compact machine attestation. Validation selected by the
 repository's trusted publication policy lives in one pipeline-owned comment.
 no-mistakes records a principal-bound pending create before first publication,
-then persists and updates that exact provider identity in place. Do not copy
-logs back into the description,
-edit the owned comment, or remove the description trailer; report the forge URL
+boundedly rechecks uncertain creates, then persists and updates that exact
+provider identity in place. Do not copy logs back into the description, edit
+the owned comment, or remove the description trailer; report the forge URL
 and let the publication surfaces keep their separate ownership.
 
 ## Escalate ` + "`ask-user`" + ` findings

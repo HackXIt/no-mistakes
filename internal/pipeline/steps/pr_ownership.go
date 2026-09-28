@@ -20,8 +20,10 @@ const (
 )
 
 var (
-	prAppendixMarkerPattern = regexp.MustCompile(`(?i)<!--\s*/?\s*` + prAppendixNamespace)
-	prOwnershipAttrsPattern = regexp.MustCompile(`^ narrative_sha256=([0-9a-f]{64}|-) title_sha256=([0-9a-f]{64}|-)$`)
+	prAppendixMarkerPattern           = regexp.MustCompile(`(?i)<!--\s*/?\s*` + prAppendixNamespace)
+	prOwnershipAttrsPattern           = regexp.MustCompile(`^ narrative_sha256=([0-9a-f]{64}|-) title_sha256=([0-9a-f]{64}|-)$`)
+	legacyPipelineOmissionPattern     = regexp.MustCompile(`^_\.\.\. \([1-9][0-9]* earlier update rounds? omitted to keep the PR body within GitHub's 65536-char limit; full history is in the run log\.\)_`)
+	legacyConversationOmissionPattern = regexp.MustCompile(`^[1-9][0-9]* further review question\(s\) omitted for length\.$`)
 )
 
 func hasPRAppendixMarkers(body string) bool {
@@ -197,6 +199,90 @@ func wrapOwnedPRAppendix(parts prOwnedBody, title, appendix string, provider scm
 	return fmt.Sprintf("%s%x%s -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(digestPayload)), attrs, appendix, prAppendixEnd)
 }
 
+func canonicalLegacyReviewConversation(section string) bool {
+	const heading = "### Review conversation\n\n"
+	if !strings.HasPrefix(section, heading) {
+		return false
+	}
+	lines := strings.Split(strings.TrimPrefix(section, heading), "\n")
+	entries := 0
+	for i := 0; i < len(lines); {
+		if lines[i] == "" && i+1 == len(lines) {
+			break
+		}
+		if lines[i] == "" && i+2 == len(lines) && legacyConversationOmissionPattern.MatchString(lines[i+1]) {
+			return entries > 0
+		}
+		if !strings.HasPrefix(lines[i], "- **Q:** ") || len(strings.TrimPrefix(lines[i], "- **Q:** ")) == 0 || i+1 >= len(lines) {
+			return false
+		}
+		answer := lines[i+1]
+		validAnswer := strings.HasPrefix(answer, "  **A** (") && strings.Contains(answer, ")**:** ")
+		validAnswer = validAnswer || strings.HasPrefix(answer, "  **Unanswered:** ") || strings.HasPrefix(answer, "  **Withdrawn by the reviewer:** ")
+		if !validAnswer {
+			return false
+		}
+		entries++
+		i += 2
+	}
+	return entries > 0
+}
+
+func canonicalLegacyPipelineSuffix(suffix string) bool {
+	if suffix == "" || suffix == "\n\n" {
+		return true
+	}
+	if !strings.HasPrefix(suffix, "\n\n") {
+		return false
+	}
+	rest := strings.TrimPrefix(suffix, "\n\n")
+	omitted := false
+	if match := legacyPipelineOmissionPattern.FindString(rest); match != "" {
+		omitted = true
+		rest = strings.TrimPrefix(rest, match)
+		if rest == "" || rest == "\n" {
+			return true
+		}
+		if !strings.HasPrefix(rest, "\n\n") {
+			return false
+		}
+		rest = strings.TrimPrefix(rest, "\n\n")
+	}
+
+	details := 0
+	for strings.HasPrefix(rest, "<details>\n<summary>") {
+		summaryEnd := strings.Index(rest, "</summary>\n\n")
+		if summaryEnd < len("<details>\n<summary>") {
+			return false
+		}
+		contentStart := summaryEnd + len("</summary>\n\n")
+		closeAt := strings.Index(rest[contentStart:], "\n</details>")
+		if closeAt < 0 || strings.TrimSpace(rest[contentStart:contentStart+closeAt]) == "" {
+			return false
+		}
+		rest = rest[contentStart+closeAt+len("\n</details>"):]
+		details++
+		if rest == "" || rest == "\n" {
+			return true
+		}
+		if strings.HasPrefix(rest, "\n\n<details>") {
+			rest = strings.TrimPrefix(rest, "\n\n")
+			continue
+		}
+		break
+	}
+	if details == 0 && !omitted {
+		return false
+	}
+	if strings.HasPrefix(rest, "\n\n\n### Review conversation\n\n") {
+		return canonicalLegacyReviewConversation(strings.TrimPrefix(rest, "\n\n\n"))
+	}
+	if omitted && strings.HasPrefix(rest, "### Review conversation\n\n") {
+		return canonicalLegacyReviewConversation(rest)
+	}
+	return false
+}
+
 // parseOrMigratePROwnedBody adopts only the exact legacy body contract: one
 // generated signature plus one live attestation. The marker moves into the new
 // compact owned trailer while every other byte (including author edits and the
@@ -243,7 +329,7 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
 	}
 	markerEnd := markerStart + len(marker)
-	if (minimal && markerEnd != len(body)) || strings.Contains(body[markerEnd:], "\n## ") {
+	if (minimal && markerEnd != len(body)) || (!minimal && !canonicalLegacyPipelineSuffix(body[markerEnd:])) {
 		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the trailing legacy footer")
 	}
 	var attestation pipelineAttestation

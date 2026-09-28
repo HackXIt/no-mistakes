@@ -21,6 +21,7 @@ type managedCommentTestHost struct {
 	comments        []scm.PRComment
 	principal       string
 	createErr       error
+	createBeforeErr bool
 	creates         int
 	updates         int
 	listCalls       int
@@ -52,13 +53,16 @@ func (h *managedCommentTestHost) ListPRComments(context.Context, *scm.PR) ([]scm
 }
 func (h *managedCommentTestHost) CreatePRComment(_ context.Context, _ *scm.PR, body string) (scm.PRComment, error) {
 	h.creates++
+	principal, _ := h.AuthenticatedPRCommentPrincipal(context.Background())
+	comment := scm.PRComment{ID: "7", Body: body, Principal: principal}
 	if h.createErr != nil {
 		err := h.createErr
 		h.createErr = nil
+		if h.createBeforeErr {
+			h.comments = append(h.comments, comment)
+		}
 		return scm.PRComment{}, err
 	}
-	principal, _ := h.AuthenticatedPRCommentPrincipal(context.Background())
-	comment := scm.PRComment{ID: "7", Body: body, Principal: principal}
 	h.comments = append(h.comments, comment)
 	return comment, nil
 }
@@ -152,7 +156,7 @@ func TestPublishValidationCommentSettlesDelayedCreateVisibilityWithoutDuplicatin
 }
 
 func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T) {
-	for _, mode := range []string{"before remote create", "after remote create", "create error"} {
+	for _, mode := range []string{"before remote create", "after remote create", "uncertain create found", "uncertain create absent"} {
 		t.Run(mode, func(t *testing.T) {
 			url := "https://github.com/test/repo/pull/42"
 			pr := &scm.PR{Number: "42", URL: url}
@@ -163,23 +167,18 @@ func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode != "create error" {
+			if strings.HasPrefix(mode, "before") || strings.HasPrefix(mode, "after") {
 				if err := sctx.DB.BeginManagedPRCommentCreate(expected); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if mode == "after remote create" {
 				host.comments = append(host.comments, scm.PRComment{ID: "7", Body: body, Principal: "bot-1"})
+				host.hiddenListCalls = map[int]bool{1: true}
 			}
-			if mode == "create error" {
+			if strings.HasPrefix(mode, "uncertain create") {
 				host.createErr = errors.New("uncertain create")
-				if err := publishValidationComment(sctx, host, pr, body); err == nil {
-					t.Fatal("create error was accepted")
-				}
-				pending, err := sctx.DB.GetPendingManagedPRComment("repo-1", "github", "42")
-				if err != nil || pending == nil {
-					t.Fatalf("create error lost pending intent: %+v %v", pending, err)
-				}
+				host.createBeforeErr = mode == "uncertain create found"
 			}
 			if err := publishValidationComment(sctx, host, pr, body); err != nil {
 				t.Fatal(err)
@@ -187,7 +186,7 @@ func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T
 			wantCreates := 1
 			if mode == "after remote create" {
 				wantCreates = 0
-			} else if mode == "create error" {
+			} else if mode == "uncertain create absent" {
 				wantCreates = 2
 			}
 			if host.creates != wantCreates || len(host.comments) != 1 {
@@ -211,6 +210,9 @@ func TestPublishValidationCommentRecoveryRequiresOnePrincipalMatch(t *testing.T)
 	} {
 		sctx := managedCommentContext(t, url)
 		host := &managedCommentTestHost{comments: comments}
+		if len(comments) > 1 {
+			host.hiddenListCalls = map[int]bool{1: true}
+		}
 		expected, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", body)
 		if err != nil {
 			t.Fatal(err)
@@ -295,8 +297,18 @@ func TestPublishValidationCommentRefusesMissingOrEditedBoundComment(t *testing.T
 
 func TestPublishValidationCommentRefusesSiblingReviewObject(t *testing.T) {
 	ownedURL := "https://github.com/test/repo/pull/42"
-	host := &managedCommentTestHost{}
-	err := publishValidationComment(managedCommentContext(t, ownedURL), host, &scm.PR{Number: "43", URL: "https://github.com/test/repo/pull/43"}, wrapValidationComment("validation"))
+	ownedPR := &scm.PR{Number: "42", URL: ownedURL}
+	sctx := managedCommentContext(t, ownedURL)
+	body := wrapValidationComment("validation")
+	host := &managedCommentTestHost{comments: []scm.PRComment{{ID: "7", Body: body, Principal: "bot-1"}}}
+	pending, err := pendingValidationComment(sctx, host, ownedPR, "42", "bot-1", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.BeginManagedPRCommentCreate(pending); err != nil {
+		t.Fatal(err)
+	}
+	err = publishValidationComment(sctx, host, &scm.PR{Number: "43", URL: "https://github.com/test/repo/pull/43"}, body)
 	if err == nil || host.creates != 0 {
 		t.Fatalf("sibling review object was not refused: err=%v creates=%d", err, host.creates)
 	}
@@ -561,6 +573,9 @@ func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t
 		"blockquote":                "Author archive:\n\n" + quoted,
 		"prose":                     "Author archive quotes " + noMistakesPRSignature + " beside " + legacyMarker,
 		"nontrailing footer":        footer + "\n\n## Human notes\n\nKeep this marker as quoted history.",
+		"plain suffix":              "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\nQuoted context.",
+		"suffix after details":      footer + "\n\nQuoted context.",
+		"malformed details":         "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nQuoted context.",
 		"fenced minimal":            "```text\n" + minimal + "\n```",
 		"embedded minimal":          "Author archive:\n\n" + minimal + "\n\nHuman suffix.",
 		"duplicated minimal marker": minimal + "\n\n" + minimal,

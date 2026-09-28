@@ -358,11 +358,59 @@ func recoverPendingValidationComment(comments []scm.PRComment, pending db.Pendin
 	return found, nil
 }
 
+func waitValidationSettlement(sctx *pipeline.StepContext) error {
+	timer := time.NewTimer(validationSettlementDelay)
+	select {
+	case <-sctx.Ctx.Done():
+		timer.Stop()
+		return sctx.Ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func recheckPendingValidationComment(sctx *pipeline.StepContext, host scm.ManagedPRCommentHost, pr *scm.PR, pending db.PendingManagedPRComment) (*ownedValidationComment, error) {
+	var readErr error
+	for attempt := 0; attempt < validationSettlementReads; attempt++ {
+		if err := waitValidationSettlement(sctx); err != nil {
+			return nil, err
+		}
+		comments, err := host.ListPRComments(sctx.Ctx, pr)
+		if err != nil {
+			readErr = err
+			continue
+		}
+		found, err := recoverPendingValidationComment(comments, pending)
+		if err != nil || found != nil {
+			return found, err
+		}
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("recheck pending validation comment: %w", readErr)
+	}
+	return nil, nil
+}
+
+func validateCreatedValidationComment(created scm.PRComment, pending db.PendingManagedPRComment) (*ownedValidationComment, error) {
+	if strings.TrimSpace(created.ID) == "" || created.Body != pending.Body || created.Principal != pending.Principal {
+		return nil, fmt.Errorf("create validation comment returned an incomplete settled identity")
+	}
+	owned, ok, err := parseValidationComment(created)
+	if err != nil {
+		return nil, fmt.Errorf("create validation comment returned invalid ownership: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("create validation comment returned no ownership markers")
+	}
+	return &owned, nil
+}
+
 // publishValidationComment is idempotent and fail-closed. A successful create
-// persists its exact provider ID before settlement; a create error cannot prove
-// ownership and is not replayed. An update error is reconciled only against the
-// already-bound ID. Exact read-after-write verification also catches provider
-// truncation and a comment moved to a sibling review object.
+// persists its exact provider ID before settlement; an uncertain create is
+// rechecked for its exact pending identity before one retry. An update error is
+// reconciled only against the already-bound ID. Exact read-after-write
+// verification also catches provider truncation and a comment moved to a
+// sibling review object.
 func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, body string) error {
 	if host == nil || pr == nil {
 		return fmt.Errorf("validation comment publication requires a pull request identity")
@@ -402,6 +450,7 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		if err != nil {
 			return err
 		}
+		resumingPending := pending != nil
 		if pending == nil {
 			if err := refuseUnboundValidationMarkers(comments); err != nil {
 				return err
@@ -418,20 +467,32 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		if err != nil {
 			return err
 		}
-		if recovered == nil {
-			created, err := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+		if recovered == nil && resumingPending {
+			recovered, err = recheckPendingValidationComment(sctx, commentsHost, pr, *pending)
 			if err != nil {
-				return fmt.Errorf("create validation comment: %w", err)
+				return err
 			}
-			if strings.TrimSpace(created.ID) == "" || created.Body != body || created.Principal != pending.Principal {
-				return fmt.Errorf("create validation comment returned an incomplete settled identity")
+		}
+		if recovered == nil {
+			created, createErr := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+			if createErr != nil {
+				recovered, err = recheckPendingValidationComment(sctx, commentsHost, pr, *pending)
+				if err != nil {
+					return fmt.Errorf("create validation comment: %w (recheck: %v)", createErr, err)
+				}
+				if recovered == nil {
+					created, err = commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+					if err != nil {
+						return fmt.Errorf("create validation comment after bounded recheck: %w (initial create: %v)", err, createErr)
+					}
+				}
 			}
-			if _, ok, err := parseValidationComment(created); err != nil {
-				return fmt.Errorf("create validation comment returned invalid ownership: %w", err)
-			} else if !ok {
-				return fmt.Errorf("create validation comment returned no ownership markers")
+			if recovered == nil {
+				recovered, err = validateCreatedValidationComment(created, *pending)
+				if err != nil {
+					return err
+				}
 			}
-			recovered = &ownedValidationComment{comment: created}
 		}
 		if err := sctx.DB.CompleteManagedPRCommentCreate(*pending, recovered.comment.ID); err != nil {
 			return err
@@ -496,12 +557,8 @@ func verifyValidationComment(sctx *pipeline.StepContext, host scm.ManagedPRComme
 			lastErr = fmt.Errorf("provider did not settle the proposed validation comment")
 		}
 		if attempt+1 < validationSettlementReads {
-			timer := time.NewTimer(validationSettlementDelay)
-			select {
-			case <-sctx.Ctx.Done():
-				timer.Stop()
-				return sctx.Ctx.Err()
-			case <-timer.C:
+			if err := waitValidationSettlement(sctx); err != nil {
+				return err
 			}
 		}
 	}
