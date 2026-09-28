@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,6 +193,106 @@ func TestPRPublicationSeparatesConciseDescriptionFromDetailedValidation(t *testi
 	}
 	if got, out := runVerifyPy(t, content.Body, head); got != "success" {
 		t.Fatalf("body-based enforcement contract changed: %s\n%s", got, out)
+	}
+}
+
+func TestPRStep_RefreshesGeneratedNarrativeAcrossHeads(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env, _ := fakeGH(t, "https://github.com/test/repo/pull/42")
+	env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile, "FAKE_CLI_PR_TITLE=feat: stable generated title")
+
+	calls := 0
+	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
+		calls++
+		body := "First generated narrative."
+		if calls == 2 {
+			body = "Second generated narrative."
+		}
+		payload, err := json.Marshal(prContent{Title: "feat: stable generated title", Body: body})
+		if err != nil {
+			return nil, err
+		}
+		return &agent.Result{Output: payload}, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx.Env = env
+	step := &PRStep{}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, dir, "add", "second.txt")
+	gitCmd(t, dir, "commit", "-m", "second delta")
+	secondHead := gitCmd(t, dir, "rev-parse", "HEAD")
+	sctx.Run.HeadSHA = secondHead
+	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, secondHead); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || !strings.Contains(string(body), "Second generated narrative.") || strings.Contains(string(body), "First generated narrative.") {
+		t.Fatalf("second head retained stale generated content: calls=%d body=%s", calls, body)
+	}
+	if _, err := step.Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("same-head publication redrafted generated content: calls=%d", calls)
+	}
+	parts, err := parsePROwnedBody(string(body))
+	if err != nil || !parts.generatedNarrative || parts.generatedTitle {
+		t.Fatalf("refreshed narrative or preserved title has wrong ownership: parts=%+v err=%v", parts, err)
+	}
+}
+
+func TestPRStep_PreservesExistingHumanOwnedNarrative(t *testing.T) {
+	t.Parallel()
+	dir, base, head := setupGitRepo(t)
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	author := "Human-owned release narrative.\n\nCloses test/repo#7\n"
+	if err := os.WriteFile(bodyFile, []byte(author), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/42")
+	env = append(env, "FAKE_CLI_PR_BODY_FILE="+bodyFile, "FAKE_CLI_PR_TITLE=Human-owned title")
+	ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+		t.Fatal("human-owned untemplated content must not be redrafted")
+		return nil, nil
+	}}
+	sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{})
+	sctx.Env = env
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := parsePROwnedBody(string(body))
+	if err != nil || strings.TrimSpace(parts.before) != strings.TrimSpace(author) || parts.generatedNarrative || parts.generatedTitle {
+		t.Fatalf("human-owned narrative changed ownership: parts=%+v err=%v body=%s", parts, err, body)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logData), "--title") {
+		t.Fatalf("human-owned title was rewritten:\n%s", logData)
 	}
 }
 

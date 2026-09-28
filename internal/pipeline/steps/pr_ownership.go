@@ -13,12 +13,16 @@ import (
 )
 
 const (
-	prAppendixNamespace = "no-mistakes-pr-appendix"
-	prAppendixStart     = "<!-- " + prAppendixNamespace + ":v1 sha256="
-	prAppendixEnd       = "<!-- /" + prAppendixNamespace + ":v1 -->"
+	prAppendixNamespace       = "no-mistakes-pr-appendix"
+	prAppendixStart           = "<!-- " + prAppendixNamespace + ":v1 sha256="
+	prAppendixEnd             = "<!-- /" + prAppendixNamespace + ":v1 -->"
+	prGeneratedOwnershipAttrs = " narrative_sha256=%s title_sha256=%s"
 )
 
-var prAppendixMarkerPattern = regexp.MustCompile(`(?i)<!--\s*/?\s*` + prAppendixNamespace)
+var (
+	prAppendixMarkerPattern = regexp.MustCompile(`(?i)<!--\s*/?\s*` + prAppendixNamespace)
+	prOwnershipAttrsPattern = regexp.MustCompile(`^ narrative_sha256=([0-9a-f]{64}|-) title_sha256=([0-9a-f]{64}|-)$`)
+)
 
 func hasPRAppendixMarkers(body string) bool {
 	return prAppendixMarkerPattern.MatchString(body)
@@ -27,12 +31,16 @@ func hasPRAppendixMarkers(body string) bool {
 type prOwnedBody struct {
 	before, appendix, after string
 	managed                 bool
+	generatedNarrative      bool
+	generatedTitle          bool
+	generatedTitleSHA       string
+	attestedHead            string
 }
 
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
 // authors can edit every byte, including the attestation. We never infer
-// ownership from headings: only an intact, unchanged, explicitly delimited
-// appendix is replaceable. Editing inside it fails instead of erasing notes.
+// ownership from headings. The delimited appendix is replaceable only while
+// intact; optional hashes also identify unchanged generated title/narrative.
 func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !hasPRAppendixMarkers(body) {
 		if strings.Contains(body, pipelineAttestationCommentPrefix) {
@@ -46,14 +54,37 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 		return prOwnedBody{}, fmt.Errorf("ambiguous PR appendix ownership markers; refusing to discard author content")
 	}
 	digestStart := start + len(prAppendixStart)
-	contentStart := digestStart + 64 + len(" -->\n")
+	headerEndOffset := strings.Index(body[digestStart:], " -->\n")
+	if headerEndOffset < 64 {
+		return prOwnedBody{}, fmt.Errorf("malformed PR appendix ownership markers")
+	}
+	headerEnd := digestStart + headerEndOffset
+	contentStart := headerEnd + len(" -->\n")
 	afterEnd := end + len(prAppendixEnd)
-	if contentStart >= end || body[digestStart+64:contentStart] != " -->\n" || body[end-1] != '\n' || (afterEnd < len(body) && body[afterEnd] != '\n') {
+	if contentStart >= end || body[end-1] != '\n' || (afterEnd < len(body) && body[afterEnd] != '\n') {
 		return prOwnedBody{}, fmt.Errorf("malformed PR appendix ownership markers")
 	}
 	parts := prOwnedBody{before: body[:start], appendix: body[contentStart : end-1], after: body[afterEnd:], managed: true}
-	if markdownFenceOpen(parts.appendix) || fmt.Sprintf("%x", sha256.Sum256([]byte(parts.appendix))) != body[digestStart:digestStart+64] {
+	attrs := body[digestStart+64 : headerEnd]
+	digestPayload := parts.appendix
+	if attrs != "" {
+		digestPayload = attrs + "\n" + digestPayload
+	}
+	if markdownFenceOpen(parts.appendix) || fmt.Sprintf("%x", sha256.Sum256([]byte(digestPayload))) != body[digestStart:digestStart+64] {
 		return prOwnedBody{}, fmt.Errorf("PR appendix was edited or is malformed; refusing to overwrite possible author content")
+	}
+	if attrs != "" {
+		match := prOwnershipAttrsPattern.FindStringSubmatch(attrs)
+		if match == nil {
+			return prOwnedBody{}, fmt.Errorf("malformed generated PR ownership metadata")
+		}
+		if match[1] != "-" && fmt.Sprintf("%x", sha256.Sum256([]byte(parts.before))) == match[1] {
+			parts.generatedNarrative = true
+		}
+		if match[2] != "-" {
+			parts.generatedTitle = true
+			parts.generatedTitleSHA = match[2]
+		}
 	}
 	if strings.Contains(parts.before+parts.after, pipelineAttestationCommentPrefix) || strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 {
 		return prOwnedBody{}, fmt.Errorf("ambiguous PR attestation ownership")
@@ -64,6 +95,7 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !ok || json.Unmarshal([]byte(payload), &attestation) != nil || attestation.HeadSHA == "" {
 		return prOwnedBody{}, fmt.Errorf("malformed attestation in PR appendix")
 	}
+	parts.attestedHead = attestation.HeadSHA
 	return parts, nil
 }
 
@@ -106,8 +138,42 @@ func (f *markdownFence) consume(raw string) {
 	}
 }
 
+func generatedTitleOwned(parts prOwnedBody, title string) bool {
+	return parts.generatedTitle && fmt.Sprintf("%x", sha256.Sum256([]byte(title))) == parts.generatedTitleSHA
+}
+
+func hasGeneratedPRContent(parts prOwnedBody, current scm.PRContent) bool {
+	return parts.generatedNarrative || generatedTitleOwned(parts, current.Title)
+}
+
 func wrapPRAppendix(appendix string) string {
 	return fmt.Sprintf("%s%x -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(appendix)), appendix, prAppendixEnd)
+}
+
+func wrapOwnedPRAppendix(parts prOwnedBody, title, appendix string) string {
+	attrs := ""
+	if parts.generatedNarrative || parts.generatedTitle {
+		narrativeSHA := "-"
+		if parts.generatedNarrative {
+			narrativeSHA = fmt.Sprintf("%x", sha256.Sum256([]byte(parts.before)))
+		}
+		titleSHA := "-"
+		if parts.generatedTitle {
+			titleSHA = parts.generatedTitleSHA
+			if title != "" {
+				titleSHA = fmt.Sprintf("%x", sha256.Sum256([]byte(title)))
+			}
+			if titleSHA == "" {
+				titleSHA = "-"
+			}
+		}
+		attrs = fmt.Sprintf(prGeneratedOwnershipAttrs, narrativeSHA, titleSHA)
+	}
+	digestPayload := appendix
+	if attrs != "" {
+		digestPayload = attrs + "\n" + digestPayload
+	}
+	return fmt.Sprintf("%s%x%s -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(digestPayload)), attrs, appendix, prAppendixEnd)
 }
 
 // parseOrMigratePROwnedBody adopts only the exact legacy body contract: one
@@ -150,7 +216,10 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 	if !parts.managed && before != "" {
 		before += "\n\n"
 	}
-	content := prContent{Title: redactPRContent(prContent{Title: title}).Title, Body: before + wrapPRAppendix(appendix) + after}
+	title = redactPRContent(prContent{Title: title}).Title
+	parts.before = before
+	parts.after = after
+	content := prContent{Title: title, Body: before + wrapOwnedPRAppendix(parts, title, appendix) + after}
 	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
 		return prContent{}, err
 	}
@@ -171,10 +240,10 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); a write error
 // or post-write divergence fails without replaying a potentially applied write.
-func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, emptyNarrative, appendix string, bodyLimit int) error {
+func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, narrative string, generated bool, appendix string, bodyLimit int) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
-		return fmt.Errorf("provider cannot read PR content; author-safe template updates are unsupported")
+		return fmt.Errorf("provider cannot read PR content; author-safe publication updates are unsupported")
 	}
 	current := initial
 	for attempt := 0; attempt < 3; attempt++ {
@@ -182,36 +251,55 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 		if err != nil {
 			return err
 		}
-		if current.Body == "" && !parts.managed {
-			parts.before = emptyNarrative
+		writeTitle := title
+		titleOwned := generatedTitleOwned(parts, current.Title)
+		if parts.generatedTitle && !titleOwned {
+			parts.generatedTitle = false
+			parts.generatedTitleSHA = ""
 		}
-		content, err := composeOwnedPRContent(parts, title, appendix, bodyLimit)
+		if generated {
+			if current.Body == "" && !parts.managed {
+				parts.before = narrative
+				parts.generatedNarrative = true
+				parts.generatedTitle = title != ""
+			} else {
+				if parts.generatedNarrative {
+					parts.before = strings.TrimRight(narrative, "\n") + "\n\n"
+				}
+				if !titleOwned {
+					writeTitle = ""
+				}
+			}
+		} else if current.Body == "" && !parts.managed {
+			parts.before = narrative
+		}
+		content, err := composeOwnedPRContent(parts, writeTitle, appendix, bodyLimit)
 		if err != nil {
 			return err
 		}
 		latest, err := reader.GetPRContent(sctx.Ctx, pr)
 		if err != nil {
-			return fmt.Errorf("re-read PR before template update: %w", err)
+			return fmt.Errorf("re-read PR before publication update: %w", err)
 		}
-		if latest.Body != current.Body {
+		if latest.Body != current.Body || latest.Title != current.Title {
 			current = latest
 			continue
 		}
 		if content.Body != current.Body || content.Title != "" {
 			if _, err := host.UpdatePR(sctx.Ctx, pr, scm.PRContent(content)); err != nil {
-				return fmt.Errorf("update templated PR: %w", err)
+				return fmt.Errorf("update PR content: %w", err)
 			}
 		}
 		verified, err := reader.GetPRContent(sctx.Ctx, pr)
 		if err != nil {
-			return fmt.Errorf("verify templated PR update: %w", err)
+			return fmt.Errorf("verify PR publication update: %w", err)
 		}
-		if verified.Body != content.Body {
-			return fmt.Errorf("PR body changed or update did not settle; refusing to report successful publication")
+		if verified.Body != content.Body || (content.Title != "" && verified.Title != content.Title) {
+			return fmt.Errorf("PR content changed or update did not settle; refusing to report successful publication")
 		}
 		return nil
 	}
-	return fmt.Errorf("PR body kept changing before template update; no write performed")
+	return fmt.Errorf("PR content kept changing before template update; no write performed")
 }
 
 // Restamping is also an owner-authorized appendix edit. Recompute its integrity

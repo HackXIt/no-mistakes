@@ -135,23 +135,48 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
 
-		var emptyNarrative string
+		var narrative string
 		var title string
+		generated := false
 		if live.Body == "" {
 			if template != "" {
 				draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
 				if err != nil {
 					return nil, err
 				}
-				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
-				title = draft.Title
+				narrative = neutralizeAttestationMarkers(draft.Body)
+				if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+					title = draft.Title
+				}
 			} else {
 				draft, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 				if err != nil {
 					return nil, err
 				}
-				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
+				narrative = neutralizeAttestationMarkers(draft.Body)
+				if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+					title = draft.Title
+				}
+				generated = true
+			}
+		} else if template == "" {
+			parts, err := parseOrMigratePROwnedBody(live.Body)
+			if err != nil {
+				return nil, err
+			}
+			if hasGeneratedPRContent(parts, live) && parts.attestedHead != sctx.Run.HeadSHA {
+				draft, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
+				if err != nil {
+					return nil, err
+				}
+				narrative = neutralizeAttestationMarkers(draft.Body)
 				title = draft.Title
+				generated = true
+			} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+				title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
+				if err != nil {
+					return nil, err
+				}
 			}
 		} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
 			title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
@@ -166,7 +191,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
-		if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
+		if err := updateOwnedPR(sctx, host, existing, live, title, narrative, generated, appendix, bodyLimit); err != nil {
 			return nil, err
 		}
 		comment, err := s.renderValidationComment(sctx, provider)
@@ -428,13 +453,15 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		return prContent{}, err
 	}
 	narrative := neutralizeAttestationMarkers(content.Body)
+	ownership := prOwnedBody{before: narrative, generatedNarrative: true, generatedTitle: true}
 	if bodyLimit > 0 {
-		overhead := scm.PRBodyLen("\n\n" + wrapPRAppendix(appendix))
+		overhead := scm.PRBodyLen("\n\n" + wrapOwnedPRAppendix(ownership, content.Title, appendix))
 		if available := bodyLimit - overhead; available > 0 && scm.PRBodyLen(narrative) > available {
 			narrative = scm.ClampPRBody(narrative, available)
+			ownership.before = narrative
 		}
 	}
-	return composeOwnedPRContent(prOwnedBody{before: narrative}, content.Title, appendix, bodyLimit)
+	return composeOwnedPRContent(ownership, content.Title, appendix, bodyLimit)
 }
 
 // redactPRContent removes the operator's home directory from the content about

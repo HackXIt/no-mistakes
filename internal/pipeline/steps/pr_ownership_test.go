@@ -107,6 +107,8 @@ func TestPROwnershipPublicationRedactionPrecedesDigest(t *testing.T) {
 type ownershipRaceHost struct {
 	scm.Host
 	body       string
+	title      string
+	allowTitle bool
 	reads      int
 	writes     int
 	read       func(*ownershipRaceHost) error
@@ -121,13 +123,20 @@ func (h *ownershipRaceHost) GetPRContent(context.Context, *scm.PR) (scm.PRConten
 			return scm.PRContent{}, err
 		}
 	}
-	return scm.PRContent{Title: "Author title", Body: h.body}, nil
+	title := h.title
+	if title == "" {
+		title = "Author title"
+	}
+	return scm.PRContent{Title: title, Body: h.body}, nil
 }
 
 func (h *ownershipRaceHost) UpdatePR(_ context.Context, pr *scm.PR, content scm.PRContent) (*scm.PR, error) {
 	h.writes++
 	if content.Title != "" {
-		return nil, errors.New("must leave author title alone")
+		if !h.allowTitle {
+			return nil, errors.New("must leave author title alone")
+		}
+		h.title = content.Title
 	}
 	if h.writeError != nil {
 		return nil, h.writeError
@@ -147,11 +156,50 @@ func TestPROwnershipUpdateMergesLatestAuthorEdits(t *testing.T) {
 		return nil
 	}}
 	sctx := &pipeline.StepContext{Ctx: context.Background()}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", appendix+"\nNew recorded fact.", 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", false, appendix+"\nNew recorded fact.", 0); err != nil {
 		t.Fatal(err)
 	}
 	if host.writes != 1 || !strings.Contains(host.body, "Human updated checkbox label") || !strings.HasSuffix(host.body, "Fixes test/other#9") || !strings.Contains(host.body, "New recorded fact.") {
 		t.Fatalf("lost latest body: writes=%d, %s", host.writes, host.body)
+	}
+}
+
+func TestPROwnershipRefreshesGeneratedContentAndPreservesHumanEdits(t *testing.T) {
+	t.Parallel()
+	_, appendix := ownedFixture(t)
+	generated, err := composeOwnedPRContent(prOwnedBody{
+		before:             "First generated narrative.",
+		generatedNarrative: true,
+		generatedTitle:     true,
+	}, "feat: first generated title", appendix, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := &ownershipRaceHost{body: generated.Body, title: generated.Title, allowTitle: true}
+	sctx := &pipeline.StepContext{Ctx: context.Background()}
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(generated), "feat: second generated title", "Second generated narrative.", true, appendix, 0); err != nil {
+		t.Fatal(err)
+	}
+	parts, err := parsePROwnedBody(host.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts.before != "Second generated narrative.\n\n" || host.title != "feat: second generated title" || !parts.generatedNarrative || !parts.generatedTitle {
+		t.Fatalf("generated content did not refresh: parts=%+v title=%q", parts, host.title)
+	}
+
+	humanBody := strings.Replace(generated.Body, "First generated narrative.", "Human-edited narrative.", 1)
+	human := &ownershipRaceHost{body: humanBody, title: "Human-edited title", allowTitle: true}
+	if err := updateOwnedPR(sctx, human, &scm.PR{Number: "42"}, scm.PRContent{Title: human.title, Body: human.body}, "feat: replacement title", "Replacement narrative.", true, appendix, 0); err != nil {
+		t.Fatal(err)
+	}
+	parts, err = parsePROwnedBody(human.body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(parts.before, "Human-edited narrative.") || human.title != "Human-edited title" || parts.generatedNarrative || parts.generatedTitle {
+		t.Fatalf("human-owned content was replaced or retained generated ownership: parts=%+v title=%q", parts, human.title)
 	}
 }
 
@@ -187,7 +235,7 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 			case "size":
 				initial.Body = strings.Repeat("Author content\n", maxPullRequestBodyBytes)
 			}
-			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", appendix+"\nNew fact", 0)
+			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", false, appendix+"\nNew fact", 0)
 			if err == nil || host.writes != wantWrites {
 				t.Fatalf("err=%v, writes=%d want %d", err, host.writes, wantWrites)
 			}
