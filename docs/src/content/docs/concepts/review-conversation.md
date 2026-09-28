@@ -501,10 +501,11 @@ on review fix rounds - neither user-driven nor answer-driven - and there is no
 follow-ups after a couple of rounds is a convention; it is not a pipeline limit
 and must not become one.
 
-## The PR body
+## The validation comment
 
-The PR body records the conversation alongside the existing decision and
-deferred lists: each question asked, its answer, and who answered it. A
+The pipeline-owned validation comment records the conversation alongside the
+existing decision and deferred lists: each question asked, its answer, and who
+answered it. A
 retracted question is listed as withdrawn.
 
 A question can also be published as **unanswered**. The review step never

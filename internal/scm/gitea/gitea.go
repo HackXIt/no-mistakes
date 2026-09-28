@@ -75,7 +75,7 @@ func (h *Host) Capabilities() scm.Capabilities {
 	// documented upstream reliability bug (go-gitea/gitea#25849) that can
 	// stick `false` after a conflict is actually resolved. Trusting it is
 	// worse than declining the capability, matching Bitbucket's posture.
-	return scm.Capabilities{MergeableState: false, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: false, FailedCheckLogs: true, ManagedPRComments: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {

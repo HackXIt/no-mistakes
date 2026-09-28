@@ -29,7 +29,7 @@ func (h *Host) Provider() scm.Provider { return scm.ProviderBitbucket }
 // Capabilities reports Bitbucket's feature matrix. Bitbucket's REST API
 // does not expose a reliable merge-conflict probe, so MergeableState is off.
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: false, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: false, FailedCheckLogs: true, ManagedPRComments: true}
 }
 
 func (h *Host) Available(_ context.Context) error {

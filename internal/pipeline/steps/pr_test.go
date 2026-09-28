@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,8 +224,11 @@ func TestPRStep_BitbucketUpdatesExistingPR(t *testing.T) {
 	if api.lastAuthHeader == "" {
 		t.Fatal("expected Authorization header for Bitbucket API")
 	}
-	if !strings.Contains(api.lastUpdateBody, "title") || !strings.Contains(api.lastUpdateBody, "description") {
-		t.Fatalf("expected Bitbucket PR update payload to include title and description, got %q", api.lastUpdateBody)
+	if strings.Contains(api.lastUpdateBody, "title") || !strings.Contains(api.lastUpdateBody, "description") {
+		t.Fatalf("expected author-safe Bitbucket update to omit the live title and update only the description, got %q", api.lastUpdateBody)
+	}
+	if api.commentWrites != 1 || !strings.Contains(api.commentBody, validationCommentHeading) {
+		t.Fatalf("managed validation comment was not created exactly once: writes=%d body=%q", api.commentWrites, api.commentBody)
 	}
 
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -250,35 +251,6 @@ func TestPRStep_BitbucketUpdatesExistingPRWithoutHTMLLink(t *testing.T) {
 	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
 	sctx.Env = fakeBitbucketEnv(api.server.URL)
 	sctx.Repo.UpstreamURL = "https://bitbucket.org/test/repo.git"
-	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.lastAuthHeader = r.Header.Get("Authorization")
-
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
-			api.listCalls++
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"values":[{"id":%d,"links":{"html":{"href":%q}}}]}`,
-				api.existingPRID,
-				api.existingPRURL,
-			)
-		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
-		case r.Method == http.MethodPut && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			api.updateCalls++
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read update body: %v", err)
-			}
-			api.lastUpdateBody = string(body)
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"id":%d}`,
-				api.existingPRID,
-			)
-		default:
-			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
-		}
-	})
-
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -403,11 +375,16 @@ func TestPRStep_CreatesConfiguredDraftPR(t *testing.T) {
 	if strings.Contains(ghLog, "--title feat: add feature") {
 		t.Fatalf("expected fallback PR title to exclude commit-history scope, got:\n%s", ghLog)
 	}
-	if !strings.Contains(ghLog, "## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected fallback PR body to append risk note under Risk Assessment heading, got:\n%s", ghLog)
+	comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(ghLog, "A\tfeature.txt") {
-		t.Fatalf("expected fallback PR body to derive scope from the final diff, got:\n%s", ghLog)
+	if !strings.Contains(comment, "## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
+		t.Fatalf("expected validation comment to carry the recorded risk note, got:\n%s", comment)
+	}
+	descriptionLog, _, _ := strings.Cut(ghLog, "api --hostname")
+	if strings.Contains(descriptionLog, "A\tfeature.txt") || strings.Contains(descriptionLog, "## Risk Assessment") {
+		t.Fatalf("fallback description repeated diff or validation detail:\n%s", descriptionLog)
 	}
 
 	// Verify PR URL was stored
@@ -630,10 +607,16 @@ func TestPRStep_BitbucketCreatesNewPR(t *testing.T) {
 		t.Fatalf("expected Bitbucket PR create payload to include source and destination, got %q", api.lastCreateBody)
 	}
 	description := bitbucketPRDescriptionForTest(t, api.lastCreateBody)
-	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video", pipelineAttestationCommentPrefix} {
+	for _, leak := range []string{"<details>", "<summary>", "<code>", "<video"} {
 		if strings.Contains(description, leak) {
-			t.Errorf("Bitbucket PR create shipped HTML %q:\n%s", leak, description)
+			t.Errorf("Bitbucket PR create shipped unsupported HTML %q:\n%s", leak, description)
 		}
+	}
+	if !strings.Contains(description, "```text\n"+pipelineAttestationCommentPrefix) || strings.Count(description, pipelineAttestationCommentPrefix) != 1 {
+		t.Fatalf("Bitbucket description did not carry the one visible enforcement marker:\n%s", description)
+	}
+	if api.commentWrites != 1 || !strings.Contains(api.commentBody, validationCommentHeading) {
+		t.Fatalf("Bitbucket validation comment was not maintained: writes=%d body=%q", api.commentWrites, api.commentBody)
 	}
 
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
@@ -666,29 +649,6 @@ func TestPRStep_BitbucketCreatesNewPRWithoutHTMLLink(t *testing.T) {
 	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
 		t.Fatal(err)
 	}
-	api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		api.lastAuthHeader = r.Header.Get("Authorization")
-
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
-			api.listCalls++
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"values":[]}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
-			api.createCalls++
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read create body: %v", err)
-			}
-			api.lastCreateBody = string(body)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprint(w, `{"id":99}`)
-		default:
-			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
-		}
-	})
-
 	step := &PRStep{}
 	outcome, err := step.Execute(sctx)
 	if err != nil {
@@ -798,132 +758,6 @@ func TestPRStep_UsesConfiguredTitleFormat(t *testing.T) {
 	}
 	if !strings.Contains(string(logData), "--title PROJ-123: add widget") {
 		t.Fatalf("expected configured PR title, got:\n%s", logData)
-	}
-}
-
-func TestPRStep_UsesAgentGeneratedTitleAndBody(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	findings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(reviewStep.ID, findings); err != nil {
-		t.Fatal(err)
-	}
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(ag.calls) != 1 {
-		t.Fatalf("expected 1 agent call, got %d", len(ag.calls))
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-	if !strings.Contains(ghLog, "--title fix: improve pipeline header UX") {
-		t.Fatalf("expected generated PR title in gh call, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "keep branch status readable") {
-		t.Fatalf("expected generated PR body in gh call, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "fix footer truncation\n\n## Risk Assessment\n\n⚠️ Medium: touches critical error handling") {
-		t.Fatalf("expected risk note under Risk Assessment heading, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "--title feature") {
-		t.Fatalf("expected PR title to avoid raw branch name, got:\n%s", ghLog)
-	}
-}
-
-func TestPRStep_AppendsTestingSectionFromTestStep(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"touches critical error handling"}`
-	testRound1 := `{"findings":[{"id":"test-1","severity":"error","file":"pkg/handler_test.go","line":42,"description":"expected 429 got 200"}],"summary":"1 failure"}`
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: improve pipeline header UX","body":"## Summary\n\n- keep branch status readable\n- fix footer truncation"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 500); err != nil {
-		t.Fatal(err)
-	}
-
-	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testRound1, nil, 800); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 2, "auto_fix", nil, nil, 600); err != nil {
-		t.Fatal(err)
-	}
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-
-	wantOrder := "## Risk Assessment\n\n⚠️ Medium: touches critical error handling\n\n## Testing\n\n- 🔧 **Test** - 1 issue found → fix attempted; result not reported ✅\n\n## Pipeline"
-	if !strings.Contains(ghLog, wantOrder) {
-		t.Fatalf("expected testing section between risk assessment and pipeline, got:\n%s", ghLog)
-	}
-	// Regression guard (#605/firstmate #1577, #1609): the Pipeline section
-	// must carry the rich per-step fix detail (BuildPipelineSummary), not the
-	// compact status-only variant (BuildPipelineStatusSummary) whose
-	// <details> body is always empty and would never show this finding line.
-	if !strings.Contains(ghLog, "expected 429 got 200") {
-		t.Fatalf("expected rich per-step Pipeline detail with the Test step's finding, got:\n%s", ghLog)
 	}
 }
 
@@ -1527,241 +1361,6 @@ func TestBuildPRBody_TruncatesOversizedIntentBeforeGeneratedSections(t *testing.
 	}
 }
 
-func TestPRStep_CreateKeepsGeneratedSectionsAfterOversizedIntent(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: keep generated pr bodies postable","body":"## What Changed\n\n- essential summary survives"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.UserIntent = "Keep generated sections visible.\n" + strings.Repeat("oversized intent context line\n", 2500)
-
-	reviewFindings := `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"validates generated PR body length handling"}`
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.SetStepFindings(reviewStep.ID, reviewFindings); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(reviewStep.ID, 1, "initial", &reviewFindings, nil, 100); err != nil {
-		t.Fatal(err)
-	}
-
-	testFindings := `{"findings":[],"summary":"","testing_summary":"Validated generated PR body length handling.","tested":["go test ./internal/pipeline/steps"]}`
-	testStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(testStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sctx.DB.InsertStepRound(testStep.ID, 1, "initial", &testFindings, nil, 100); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	body := readFakeGHBodyArg(t, logFile)
-	assertGitHubBodyLimitForTest(t, body)
-	attestation := parsePipelineAttestationForTest(t, body)
-	if attestation.HeadSHA != headSHA {
-		t.Fatalf("attested head = %q, want created PR head %q", attestation.HeadSHA, headSHA)
-	}
-	for _, want := range []string{
-		"## Intent",
-		"Keep generated sections visible.",
-		"body truncated to keep the PR body within GitHub's 65536-char limit",
-		"## What Changed",
-		"essential summary survives",
-		"## Risk Assessment",
-		"validates generated PR body length handling",
-		"## Testing",
-		"Validated generated PR body length handling.",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("expected created PR body to contain %q, got:\n%s", want, body)
-		}
-	}
-}
-
-func TestPRStep_BuildPRContentTruncatesGeneratedPipelineUpdates(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix: keep generated pr bodies postable","body":"## What Changed\n\n- essential summary survives"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.UserIntent = "Keep PR creation postable when long validation runs accumulate many pipeline update rounds."
-
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	for i := 1; i <= 140; i++ {
-		findings := fmt.Sprintf(`{"findings":[{"id":"review-%03d","severity":"warning","file":"internal/pipeline/steps/pr.go","line":%d,"description":"review round %03d %s"}],"summary":"1 warning"}`, i, i, i, strings.Repeat("x", 600))
-		trigger := "auto_fix"
-		if i == 1 {
-			trigger = "initial"
-		}
-		if _, err := sctx.DB.InsertStepRound(reviewStep.ID, i, trigger, &findings, nil, 100); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertGitHubBodyLimitForTest(t, content.Body)
-	if !strings.Contains(content.Body, "Keep PR creation postable") || !strings.Contains(content.Body, "essential summary survives") {
-		t.Fatalf("expected intent and summary to survive, got:\n%s", content.Body)
-	}
-	if !strings.Contains(content.Body, "earlier update rounds omitted") {
-		t.Fatalf("expected omission marker, got:\n%s", content.Body)
-	}
-	if strings.Contains(content.Body, "review round 001") {
-		t.Fatalf("expected old pipeline update to be omitted, got:\n%s", content.Body)
-	}
-	if !strings.Contains(content.Body, "review round 140") {
-		t.Fatalf("expected latest pipeline update to be retained, got:\n%s", content.Body)
-	}
-}
-
-func TestPRStep_CreateCapsBodyAfterPrependedIntent(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload, err := json.Marshal(prContent{
-				Title: "fix: keep generated pr bodies postable",
-				Body:  "## What Changed\n\n- essential summary survives",
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.UserIntent = "Keep PR creation postable.\n" + strings.Repeat("intent context line stays visible\n", 900)
-
-	reviewStep, err := sctx.DB.InsertStepResult(sctx.Run.ID, types.StepReview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sctx.DB.UpdateStepStatus(reviewStep.ID, types.StepStatusCompleted); err != nil {
-		t.Fatal(err)
-	}
-	for i := 1; i <= 140; i++ {
-		findings := fmt.Sprintf(`{"findings":[{"id":"review-%03d","severity":"warning","file":"internal/pipeline/steps/pr.go","line":%d,"description":"review round %03d %s"}],"summary":"1 warning"}`, i, i, i, strings.Repeat("x", 600))
-		trigger := "auto_fix"
-		if i == 1 {
-			trigger = "initial"
-		}
-		if _, err := sctx.DB.InsertStepRound(reviewStep.ID, i, trigger, &findings, nil, 100); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, err := (&PRStep{}).Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	body := readFakeGHBodyArg(t, logFile)
-	assertGitHubBodyLimitForTest(t, body)
-	for _, want := range []string{
-		"## Intent",
-		"Keep PR creation postable.",
-		"intent context line stays visible",
-		"essential summary survives",
-		"earlier update rounds omitted",
-		"review round 140",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("expected final PR body to contain %q", want)
-		}
-	}
-	if strings.Contains(body, "review round 001") {
-		t.Fatal("expected oldest pipeline update to be omitted")
-	}
-}
-
-func TestFallbackPRContentCapsBodyAfterPrependedIntent(t *testing.T) {
-	t.Parallel()
-	sctx := newTestContext(t, &mockAgent{name: "test"}, t.TempDir(), "", "", config.Commands{})
-	sctx.UserIntent = "Fallback intent survives.\n" + strings.Repeat("fallback intent context line\n", 900)
-
-	rounds := make([]string, 0, 140)
-	for i := 1; i <= 140; i++ {
-		rounds = append(rounds, fmt.Sprintf("review round %03d - %s", i, strings.Repeat("x", 700)))
-	}
-
-	content, err := fallbackPRContent(
-		sctx,
-		"A\tinternal/pipeline/steps/pr.go",
-		"✅ Low: generated PR body length guard only",
-		"## Testing\n\n- go test ./internal/pipeline/steps",
-		pipelineMarkdownForTest(rounds...),
-		0,
-		scm.ProviderGitHub,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertGitHubBodyLimitForTest(t, content.Body)
-	for _, want := range []string{
-		"## Intent",
-		"Fallback intent survives.",
-		"## What Changed",
-		"internal/pipeline/steps/pr.go",
-		"## Risk Assessment",
-		"## Testing",
-		"earlier update rounds omitted",
-		"review round 140",
-	} {
-		if !strings.Contains(content.Body, want) {
-			t.Fatalf("expected fallback PR body to contain %q", want)
-		}
-	}
-	if strings.Contains(content.Body, "review round 001") {
-		t.Fatal("expected oldest pipeline update to be omitted")
-	}
-	if strings.Contains(content.Body, "add feature") {
-		t.Fatalf("expected fallback body to exclude commit-history scope, got:\n%s", content.Body)
-	}
-	if content.Title != "chore: update pull request" {
-		t.Fatalf("fallback title = %q, want neutral title", content.Title)
-	}
-}
-
 func bitbucketPRDescriptionForTest(t *testing.T, raw string) string {
 	t.Helper()
 	var payload struct {
@@ -1859,50 +1458,6 @@ func assertNoPartialRoundLinesForTest(t *testing.T, body string, rounds []string
 	}
 }
 
-func TestPRStep_PrependsIntentSectionWhenIntentSet(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.UserIntent = "user wanted to add a Bar() helper for foo callers"
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-
-	intentIdx := strings.Index(ghLog, "## Intent")
-	whatChangedIdx := strings.Index(ghLog, "## What Changed")
-	if intentIdx < 0 {
-		t.Fatalf("expected ## Intent section in PR body, got:\n%s", ghLog)
-	}
-	if whatChangedIdx < 0 {
-		t.Fatalf("expected ## What Changed section in PR body, got:\n%s", ghLog)
-	}
-	if intentIdx > whatChangedIdx {
-		t.Fatalf("expected ## Intent before ## What Changed, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "user wanted to add a Bar() helper for foo callers") {
-		t.Fatalf("expected intent text in PR body, got:\n%s", ghLog)
-	}
-}
-
 func TestPRStep_OmitsIntentSectionWhenIntentEmpty(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -1933,120 +1488,6 @@ func TestPRStep_OmitsIntentSectionWhenIntentEmpty(t *testing.T) {
 
 	if strings.Contains(ghLog, "## Intent") {
 		t.Fatalf("expected no ## Intent section when intent is empty, got:\n%s", ghLog)
-	}
-}
-
-func TestPRStep_StripsAgentEmittedIntentBeforePrepend(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"feat: add bar","body":"## Intent\n\n- agent paraphrase\n\n## What Changed\n\n- add Bar()"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.UserIntent = "real user intent string"
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-
-	if strings.Count(ghLog, "## Intent") != 1 {
-		t.Fatalf("expected exactly one ## Intent section, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "agent paraphrase") {
-		t.Fatalf("expected agent-emitted Intent body to be stripped, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "real user intent string") {
-		t.Fatalf("expected deterministic intent text, got:\n%s", ghLog)
-	}
-}
-
-func TestPRStep_PromptUsesWhatChanged(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, _ := fakeGH(t, "")
-
-	var capturedPrompt string
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			capturedPrompt = opts.Prompt
-			payload := json.RawMessage(`{"title":"feat: add bar","body":"## What Changed\n\n- add Bar()"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	if !strings.Contains(capturedPrompt, "## What Changed") {
-		t.Errorf("expected prompt to instruct agent to write ## What Changed, got:\n%s", capturedPrompt)
-	}
-}
-
-func TestPRStep_FallbackUsesWhatChangedAndIntent(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			return nil, fmt.Errorf("simulated agent failure")
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.Env = env
-	sctx.UserIntent = "fallback intent text"
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-
-	if !strings.Contains(ghLog, "## What Changed") {
-		t.Fatalf("expected fallback PR body to use ## What Changed heading, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "## Summary") {
-		t.Fatalf("expected fallback PR body to no longer use ## Summary heading, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "## Intent") {
-		t.Fatalf("expected fallback PR body to include ## Intent section, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "fallback intent text") {
-		t.Fatalf("expected fallback PR body to include intent text, got:\n%s", ghLog)
-	}
-
-	intentIdx := strings.Index(ghLog, "## Intent")
-	whatChangedIdx := strings.Index(ghLog, "## What Changed")
-	if intentIdx > whatChangedIdx {
-		t.Fatalf("expected ## Intent before ## What Changed in fallback, got:\n%s", ghLog)
 	}
 }
 
@@ -2136,55 +1577,6 @@ func TestPRStep_SkipsBeforeBuildingContentWhenProviderCLIUnavailable(t *testing.
 	}
 }
 
-func TestPRStep_ExistingBranchFallbackUsesMergeBaseFinalDiff(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	gitCmd(t, dir, "init")
-	gitCmd(t, dir, "config", "user.name", "test")
-	gitCmd(t, dir, "config", "user.email", "test@test.com")
-	gitCmd(t, dir, "checkout", "-b", "main")
-	os.WriteFile(filepath.Join(dir, "base.txt"), []byte("base\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "base commit")
-
-	gitCmd(t, dir, "checkout", "-b", "feature")
-	os.WriteFile(filepath.Join(dir, "first.txt"), []byte("first\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "first feature commit")
-	oldRemoteSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	os.WriteFile(filepath.Join(dir, "second.txt"), []byte("second\n"), 0o644)
-	gitCmd(t, dir, "add", "-A")
-	gitCmd(t, dir, "commit", "-m", "second feature commit")
-	headSHA := gitCmd(t, dir, "rev-parse", "HEAD")
-
-	env, logFile := fakeGH(t, "")
-
-	ag := &mockAgent{name: "test"}
-	sctx := newTestContextWithDBRecords(t, ag, dir, oldRemoteSHA, headSHA, config.Commands{})
-	sctx.Env = env
-
-	step := &PRStep{}
-	if _, err := step.Execute(sctx); err != nil {
-		t.Fatal(err)
-	}
-
-	logData, err := os.ReadFile(logFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ghLog := string(logData)
-	if !strings.Contains(ghLog, "A\tfirst.txt") {
-		t.Errorf("expected PR body to include first final-diff path, got:\n%s", ghLog)
-	}
-	if !strings.Contains(ghLog, "A\tsecond.txt") {
-		t.Errorf("expected PR body to include second final-diff path, got:\n%s", ghLog)
-	}
-	if strings.Contains(ghLog, "first feature commit") || strings.Contains(ghLog, "second feature commit") {
-		t.Errorf("expected PR body to derive scope from the final diff instead of commit history, got:\n%s", ghLog)
-	}
-}
-
 func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)
@@ -2218,9 +1610,10 @@ func TestPRStep_AgentNonConventionalTitleFallsBack(t *testing.T) {
 	if !strings.Contains(ghLog, "fix: Improve pipeline header UX") {
 		t.Fatal("expected user-facing agent title to be prefixed with fix:, got: " + ghLog)
 	}
-	// The agent's body should be preserved, not replaced with fallback
-	if !strings.Contains(ghLog, "## Summary") {
-		t.Fatal("expected agent body to be preserved, got: " + ghLog)
+	// The summary heading is removed so the description can become a squash
+	// commit body, while the substantive agent-authored bullet survives.
+	if strings.Contains(ghLog, "## Summary") || !strings.Contains(ghLog, "- improvements") {
+		t.Fatal("expected normalized concise agent body, got: " + ghLog)
 	}
 }
 
@@ -2416,62 +1809,6 @@ func TestPRStep_LateSuccessAfterTimeoutDoesNotUseAgentTitle(t *testing.T) {
 // section, the embedded copy wins and the check fails a PR the pipeline did
 // produce. Seen live on kunchenguid/no-mistakes#831, whose test evidence
 // embedded three.
-func TestPRStep_EmbeddedAttestationDoesNotShadowTheRealOne(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload := json.RawMessage(`{"title":"fix(pipeline): keep the attestation authoritative","body":"## What Changed\n\n- guard the compliance marker"}`)
-			return &agent.Result{Output: payload}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-
-	foreignSHA := strings.Repeat("f", 40)
-	embedded := pipelineAttestationCommentPrefix +
-		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
-		pipelineAttestationCommentClosingToken
-	findings := `{"findings":[],"summary":"clean","testing_summary":"Captured the generated PR body as evidence.",` +
-		`"artifacts":[{"kind":"command-output","label":"generated PR body","content":"## Pipeline\n\n` +
-		strings.ReplaceAll(embedded, `"`, `\"`) + `"}]}`
-	insertCompletedStep(t, sctx, types.StepTest, findings, "")
-
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if n := strings.Count(content.Body, pipelineAttestationCommentPrefix); n != 1 {
-		t.Fatalf("expected exactly one parseable attestation marker, got %d:\n%s", n, content.Body)
-	}
-	// Mirror verify.py: first marker wins.
-	start := strings.Index(content.Body, pipelineAttestationCommentPrefix)
-	start += len(pipelineAttestationCommentPrefix)
-	end := strings.Index(content.Body[start:], pipelineAttestationCommentClosingToken)
-	if end < 0 {
-		t.Fatalf("attestation comment is not closed:\n%s", content.Body)
-	}
-	var attestation pipelineAttestation
-	if err := json.Unmarshal([]byte(content.Body[start:start+end]), &attestation); err != nil {
-		t.Fatalf("first attestation does not parse: %v", err)
-	}
-	if attestation.HeadSHA != sctx.Run.HeadSHA {
-		t.Fatalf("first attestation binds %q, want the run head %q", attestation.HeadSHA, sctx.Run.HeadSHA)
-	}
-	if strings.Contains(content.Body, foreignSHA+`","steps"`) && !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) {
-		t.Fatalf("embedded attestation was neither neutralized nor removed:\n%s", content.Body)
-	}
-	// The evidence itself must survive; only the marker is altered.
-	if !strings.Contains(content.Body, foreignSHA) {
-		t.Fatalf("embedded evidence payload was dropped instead of neutralized:\n%s", content.Body)
-	}
-}
-
-// assertFirstAttestationBindsHead mirrors verify.py's parse: the FIRST
-// attestation comment in the body must be the pipeline-authored one carrying
-// the run head, and it must be the only parseable marker in the body.
 func assertFirstAttestationBindsHead(t *testing.T, body, headSHA string) {
 	t.Helper()
 	if n := strings.Count(body, pipelineAttestationCommentPrefix); n != 1 {
@@ -2534,103 +1871,6 @@ func TestPRStep_AgentBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
 
 // TestFallbackPRBodyAttestationDoesNotShadowTheRealOne covers the fallback
 // body, whose What Changed section embeds the final diff verbatim.
-func TestFallbackPRBodyAttestationDoesNotShadowTheRealOne(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
-	insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{TestingSummary: "Ran the focused suite."}), "")
-
-	foreignSHA := strings.Repeat("d", 40)
-	embedded := pipelineAttestationCommentPrefix +
-		`{"head_sha":"` + foreignSHA + `","steps":[{"step":"review","status":"completed"}]}` +
-		pipelineAttestationCommentClosingToken
-
-	pipelineMD, riskLine, testingMD := (&PRStep{}).buildPipelineSection(sctx, scm.ProviderGitHub)
-	content, err := fallbackPRContent(sctx, "A\t"+embedded, riskLine, testingMD, pipelineMD, 0, scm.ProviderGitHub)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
-	if !strings.Contains(content.Body, escapedPipelineAttestationCommentPrefix) || !strings.Contains(content.Body, foreignSHA) {
-		t.Fatalf("fallback-embedded attestation was neither neutralized nor kept readable:\n%s", content.Body)
-	}
-}
-
-// TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne is the
-// choke-point regression for the compliance marker.
-//
-// The earlier guards each cover one component. This plants a foreign marker in
-// every agent-derived component at once - agent body, extracted intent, review
-// finding, risk rationale, testing summary, tested detail, and artifact content
-// - because the first attempt at this fix neutralized the marker inside
-// escapePipelineFoldMarkers, which runs per render path: it covered the
-// artifact fence and tested details, missed another path, and PR #831 still
-// published three live foreign markers ahead of the real one.
-//
-// Fencing is not a defense. verify.py scans the raw body, so a marker inside a
-// ```text block counts exactly the same as one in prose.
-func TestPRStep_ForeignAttestationsInEveryComponentDoNotShadowTheRealOne(t *testing.T) {
-	t.Parallel()
-	dir, baseSHA, headSHA := setupGitRepo(t)
-
-	foreign := func(sha string) string {
-		return pipelineAttestationCommentPrefix +
-			`{"head_sha":"` + strings.Repeat(sha, 40) + `","steps":[{"step":"review","status":"completed"}]}` +
-			pipelineAttestationCommentClosingToken
-	}
-	planted := []string{"a", "b", "c", "d", "e", "f", "0"}
-
-	ag := &mockAgent{
-		name: "test",
-		runFn: func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
-			payload, err := json.Marshal(prContent{
-				Title: "fix(pipeline): keep the attestation authoritative",
-				Body:  "## What Changed\n\n- captured a prior PR body\n\n" + foreign("a"),
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &agent.Result{Output: json.RawMessage(payload)}, nil
-		},
-	}
-	sctx := newTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
-	sctx.UserIntent = "Capture the generated PR body as evidence. " + foreign("b")
-
-	insertCompletedStep(t, sctx, types.StepReview, findingsJSON(t, types.Findings{
-		Items: []types.Finding{{
-			Severity:    types.FindingSeverityWarning,
-			Description: "prior body embedded " + foreign("c"),
-		}},
-		RiskLevel:     "low",
-		RiskRationale: "prior body embedded " + foreign("d"),
-	}), "")
-
-	insertCompletedStep(t, sctx, types.StepTest, findingsJSON(t, types.Findings{
-		TestingSummary: "Captured the published body: " + foreign("e"),
-		Tested:         []string{"diff prior-body.txt " + foreign("f")},
-		Artifacts: []types.TestArtifact{{
-			Kind:    "command-output",
-			Label:   "published PR body",
-			Content: "## Pipeline\n\n" + foreign("0"),
-		}},
-	}), "")
-
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	assertFirstAttestationBindsHead(t, content.Body, sctx.Run.HeadSHA)
-
-	// Neutralized, not dropped: the evidence has to stay readable.
-	for _, sha := range planted {
-		if !strings.Contains(content.Body, strings.Repeat(sha, 40)) {
-			t.Errorf("planted payload %q... was dropped instead of neutralized:\n%s", strings.Repeat(sha, 8), content.Body)
-		}
-	}
-}
-
 func TestPRAppendixModes_RenderBodies(t *testing.T) {
 	t.Parallel()
 	const (

@@ -1,0 +1,45 @@
+package forgejo
+
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"testing"
+
+	"github.com/kunchenguid/no-mistakes/internal/scm"
+)
+
+func TestManagedPullCommentTransport(t *testing.T) {
+	t.Parallel()
+	body := "validation body"
+	issueURL := testBaseURL + "/api/v1/repos/" + testRepo + "/issues/42"
+	list, _ := json.Marshal(map[string]any{"status": 200, "data": []any{map[string]any{"id": 11, "body": "old", "issue_url": issueURL}}})
+	created, _ := json.Marshal(map[string]any{"status": 201, "data": map[string]any{"id": 12, "body": body, "issue_url": issueURL}})
+	updated, _ := json.Marshal(map[string]any{"status": 200, "data": map[string]any{"id": 11, "body": body, "issue_url": issueURL}})
+	r := &fakeRecorder{responses: []fakeResponse{{stdout: string(list)}, {stdout: string(created)}, {stdout: string(updated)}}}
+	host := newTestHost(r)
+	pr := &scm.PR{Number: "42", URL: testPRURL}
+	comments, err := host.ListPRComments(context.Background(), pr)
+	if err != nil || len(comments) != 1 || comments[0].ID != "11" {
+		t.Fatalf("ListPRComments() = %+v, %v", comments, err)
+	}
+	gotCreate, err := host.CreatePRComment(context.Background(), pr, body)
+	if err != nil || gotCreate.ID != "12" {
+		t.Fatalf("CreatePRComment() = %+v, %v", gotCreate, err)
+	}
+	gotUpdate, err := host.UpdatePRComment(context.Background(), pr, "11", body)
+	if err != nil || gotUpdate.ID != "11" {
+		t.Fatalf("UpdatePRComment() = %+v, %v", gotUpdate, err)
+	}
+	payload := `{"body":"validation body"}`
+	want := [][]string{
+		{"api", "GET", "repos/" + testRepo + "/issues/42/comments?limit=50&page=1", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
+		{"api", "POST", "repos/" + testRepo + "/issues/42/comments", "--data", payload, "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
+		{"api", "PATCH", "repos/" + testRepo + "/issues/comments/11", "--data", payload, "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
+	}
+	for i := range want {
+		if !reflect.DeepEqual(r.calls[i].args, want[i]) {
+			t.Fatalf("call %d = %#v, want %#v", i, r.calls[i].args, want[i])
+		}
+	}
+}

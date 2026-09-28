@@ -829,6 +829,19 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
+	// Existing runs already own a durable review object. Refresh its detailed
+	// validation comment before the push as well, so a CI repair never leaves
+	// the human evidence on an older head. Enforcement remains bound to the
+	// compact description marker above.
+	if runPRURL(sctx) != "" {
+		comment, err := (&PRStep{}).renderValidationCommentForHead(sctx, provider, headSHA)
+		if err != nil {
+			return fmt.Errorf("%w: render validation comment: %v", errAttestationWriteFailed, err)
+		}
+		if err := publishValidationComment(sctx, host, pr, comment); err != nil {
+			return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
+		}
+	}
 	return nil
 }
 

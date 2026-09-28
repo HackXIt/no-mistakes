@@ -274,6 +274,11 @@ type Capabilities struct {
 	FailedCheckLogs bool
 	MergedProof     bool
 	ReviewComments  bool
+	// ManagedPRComments means the host implements ManagedPRCommentHost with
+	// complete list/create/update semantics. Publication uses it for the one
+	// pipeline-owned validation comment; it is deliberately separate from the
+	// review-thread reader above.
+	ManagedPRComments bool
 }
 
 var (
@@ -347,6 +352,27 @@ type ReviewCommentsHost interface {
 // this distinction to avoid replacing author text after an incomplete read.
 type PRContentReader interface {
 	GetPRContent(ctx context.Context, pr *PR) (PRContent, error)
+}
+
+// PRComment is an ordinary top-level issue, pull-request, or merge-request
+// comment. Body must be raw Markdown, never rendered HTML. ID is the durable
+// provider identity used for an in-place update.
+type PRComment struct {
+	ID   string
+	Body string
+	URL  string
+}
+
+// ManagedPRCommentHost is the raw transport required to maintain one
+// pipeline-owned validation comment. ListPRComments must return a complete
+// list or fail; a partial page is never absence. CreatePRComment and
+// UpdatePRComment must return the settled raw comment and verify that it still
+// belongs to pr. Ownership, duplicate detection, and read-after-write
+// settlement live in the pipeline so every provider follows one policy.
+type ManagedPRCommentHost interface {
+	ListPRComments(ctx context.Context, pr *PR) ([]PRComment, error)
+	CreatePRComment(ctx context.Context, pr *PR, body string) (PRComment, error)
+	UpdatePRComment(ctx context.Context, pr *PR, commentID, body string) (PRComment, error)
 }
 
 // MergedProof is provider evidence that a specific PR head was merged.

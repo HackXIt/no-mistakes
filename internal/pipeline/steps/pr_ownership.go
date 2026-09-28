@@ -36,7 +36,7 @@ type prOwnedBody struct {
 func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !hasPRAppendixMarkers(body) {
 		if strings.Contains(body, pipelineAttestationCommentPrefix) {
-			return prOwnedBody{}, fmt.Errorf("existing PR has an unowned legacy attestation; explicitly separate its generated evidence before enabling pr.template")
+			return prOwnedBody{}, fmt.Errorf("existing PR has an unowned attestation; refusing to infer ownership")
 		}
 		return prOwnedBody{before: body}, nil
 	}
@@ -110,6 +110,28 @@ func wrapPRAppendix(appendix string) string {
 	return fmt.Sprintf("%s%x -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(appendix)), appendix, prAppendixEnd)
 }
 
+// parseOrMigratePROwnedBody adopts only the exact legacy body contract: one
+// generated signature plus one live attestation. The marker moves into the new
+// compact owned trailer while every other byte (including author edits and the
+// old visible validation history) is retained. A bare/foreign attestation is
+// never claimed. Legacy detail can then be removed explicitly by the author;
+// heading inference would risk deleting their text.
+func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
+	if hasPRAppendixMarkers(body) || !strings.Contains(body, pipelineAttestationCommentPrefix) {
+		return parsePROwnedBody(body)
+	}
+	if strings.Count(body, pipelineAttestationCommentPrefix) != 1 || strings.Count(body, noMistakesPRSignature) != 1 {
+		return prOwnedBody{}, fmt.Errorf("ambiguous unowned PR attestation; refusing migration")
+	}
+	marker := extractPipelineAttestationMarker(body)
+	if marker == "" {
+		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
+	}
+	body = strings.Replace(body, marker, "", 1)
+	body = strings.Replace(body, noMistakesPRSignature, "", 1)
+	return prOwnedBody{before: body}, nil
+}
+
 // composeOwnedPRContent uses the same publication redaction owner as ordinary
 // drafting, BEFORE stamping the byte-integrity guard. No clamp or heading-based
 // stripper may run here: if author text and all recorded evidence cannot fit,
@@ -156,7 +178,7 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 	}
 	current := initial
 	for attempt := 0; attempt < 3; attempt++ {
-		parts, err := parsePROwnedBody(current.Body)
+		parts, err := parseOrMigratePROwnedBody(current.Body)
 		if err != nil {
 			return err
 		}

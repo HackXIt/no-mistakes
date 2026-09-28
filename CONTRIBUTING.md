@@ -5,8 +5,8 @@ Thanks for wanting to contribute. One rule up front:
 **All pull requests to this repository must be raised through `no-mistakes`.**
 
 This repo _is_ no-mistakes. Contributions should be done using the tool itself, which reduces the maintainer's burden of reviewing and merging contributions.
-The `Require no-mistakes` GitHub Actions workflow runs on every PR and fails if the body is missing the deterministic signature and structured pipeline step attestation that no-mistakes writes. PRs without them will not be reviewed or merged.
-If you revise the PR description after no-mistakes creates it, preserve the generated `## Pipeline` section. Replacing the whole body removes the signature or attestation and makes the required check fail until no-mistakes writes the section again.
+The `Require no-mistakes` GitHub Actions workflow runs on every PR and fails if the raw description is missing the deterministic signature and structured pipeline step attestation that no-mistakes writes. PRs without them will not be reviewed or merged.
+no-mistakes keeps the visible description concise and maintains detailed validation/evidence in one pipeline-owned comment, updated in place. You may edit the human narrative, but preserve the hidden `no-mistakes-pr-appendix` trailer and its attestation. Do not edit or copy the owned validation comment; a missing, edited, or duplicate owned comment makes publication fail closed until reconciled. Existing pinned enforcement continues to read the description marker, not comment prose.
 
 Every `opened` or `edited` event gets an independent run, including first-time-fork runs that become actionable through GitHub's normal approval process. The integration contract for consumers such as Wheelhouse is:
 

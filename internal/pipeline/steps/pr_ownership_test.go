@@ -158,7 +158,7 @@ func TestPROwnershipUpdateMergesLatestAuthorEdits(t *testing.T) {
 func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 	t.Parallel()
 	content, appendix := ownedFixture(t)
-	for _, mode := range []string{"read-error", "write-error", "verify-error", "verify-divergence", "keeps-changing", "edited-owned", "legacy", "size"} {
+	for _, mode := range []string{"read-error", "write-error", "verify-error", "verify-divergence", "keeps-changing", "edited-owned", "size"} {
 		t.Run(mode, func(t *testing.T) {
 			host := &ownershipRaceHost{body: content.Body}
 			initial := content
@@ -184,8 +184,6 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 				host.read = func(h *ownershipRaceHost) error { h.body += fmt.Sprintf("\nAuthor edit %d", h.reads); return nil }
 			case "edited-owned":
 				initial.Body = strings.Replace(content.Body, "Low recorded risk.", "Human note inside evidence", 1)
-			case "legacy":
-				initial.Body = compliantPipelineBody(t, testPipelineHeadSHA)
 			case "size":
 				initial.Body = strings.Repeat("Author content\n", maxPullRequestBodyBytes)
 			}

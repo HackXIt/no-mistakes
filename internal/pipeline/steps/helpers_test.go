@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -224,6 +225,9 @@ func fakeCLIEnv(binDir string, vars map[string]string) []string {
 		"FAKE_CLI_REAL_GIT=" + testGitExecutable,
 		"FAKE_CLI_HEAD_FROM_WORKTREE=1",
 	}
+	if _, ok := vars["FAKE_CLI_PR_COMMENT_FILE"]; !ok {
+		env = append(env, "FAKE_CLI_PR_COMMENT_FILE="+filepath.Join(binDir, "pr-comments.json"))
+	}
 	for k, v := range vars {
 		env = append(env, k+"="+v)
 	}
@@ -299,6 +303,9 @@ type fakeBitbucketPRAPI struct {
 	existingPRID   int
 	existingPRURL  string
 	createdPRURL   string
+	commentBody    string
+	commentWrites  int
+	description    string
 }
 
 func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string) *fakeBitbucketPRAPI {
@@ -308,6 +315,7 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 		existingPRID:  existingPRID,
 		existingPRURL: existingPRURL,
 		createdPRURL:  "https://bitbucket.org/test/repo/pull-requests/99",
+		description:   "Existing unconfigured description",
 	}
 
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +334,7 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 				api.existingPRURL,
 			)
 		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/2.0/repositories/test/repo/pullrequests/%d", api.existingPRID):
-			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":"Existing unconfigured description"}}`, api.existingPRID)
+			fmt.Fprintf(w, `{"id":%d,"title":"Existing title","summary":{"raw":%q}}`, api.existingPRID, api.description)
 		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/test/repo/pullrequests":
 			api.createCalls++
 			body, err := io.ReadAll(r.Body)
@@ -346,11 +354,50 @@ func newFakeBitbucketPRAPI(t *testing.T, existingPRID int, existingPRURL string)
 				t.Fatalf("read update body: %v", err)
 			}
 			api.lastUpdateBody = string(body)
+			var payload struct {
+				Description string `json:"description"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode update body: %v", err)
+			}
+			api.description = payload.Description
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"id":%d,"links":{"html":{"href":%q}}}`,
 				api.existingPRID,
 				api.existingPRURL,
 			)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.Header().Set("Content-Type", "application/json")
+			if api.commentBody == "" {
+				fmt.Fprint(w, `{"values":[]}`)
+			} else {
+				fmt.Fprintf(w, `{"values":[{"id":777,"content":{"raw":%q}}]}`, api.commentBody)
+			}
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			var payload struct {
+				Content struct {
+					Raw string `json:"raw"`
+				} `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode comment create: %v", err)
+			}
+			api.commentBody = payload.Content.Raw
+			api.commentWrites++
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":777,"content":{"raw":%q}}`, api.commentBody)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/comments/777"):
+			var payload struct {
+				Content struct {
+					Raw string `json:"raw"`
+				} `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode comment update: %v", err)
+			}
+			api.commentBody = payload.Content.Raw
+			api.commentWrites++
+			fmt.Fprintf(w, `{"id":777,"content":{"raw":%q}}`, api.commentBody)
 		default:
 			t.Fatalf("unexpected Bitbucket PR API request: %s %s", r.Method, r.URL.String())
 		}

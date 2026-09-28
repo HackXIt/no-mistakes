@@ -184,11 +184,11 @@ func TestPRAppendixModes_TemplatePublication(t *testing.T) {
 				}},
 			}), "")
 
-			content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+			step := &PRStep{}
+			content, err := step.buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("%s body:\n%s", mode, content.Body)
 			parts, err := parsePROwnedBody(content.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -199,35 +199,18 @@ func TestPRAppendixModes_TemplatePublication(t *testing.T) {
 			if strings.Count(parts.appendix, pipelineAttestationCommentPrefix) != 1 || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
 				t.Fatalf("attestation count:\n%s", content.Body)
 			}
-			if !strings.Contains(parts.appendix, "## Intent") || !strings.Contains(parts.appendix, "Keep the template as the visible body.") {
-				t.Fatalf("intent left the appendix:\n%s", parts.appendix)
+			for _, banned := range []string{"## Intent", "## Risk Assessment", "## Testing", "## Pipeline", "evidence log line"} {
+				if strings.Contains(parts.appendix, banned) {
+					t.Fatalf("compact trailer kept %q in %s mode:\n%s", banned, mode, parts.appendix)
+				}
 			}
-			if !strings.Contains(parts.appendix, "⚠️ Medium: touches publication") {
-				t.Fatalf("risk line missing:\n%s", parts.appendix)
+			comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+			if err != nil {
+				t.Fatal(err)
 			}
-			switch mode {
-			case config.PRAppendixFull:
-				for _, want := range []string{"## Risk Assessment", "## Testing", "evidence log line", "## Pipeline"} {
-					if !strings.Contains(parts.appendix, want) {
-						t.Fatalf("full appendix missing %q:\n%s", want, parts.appendix)
-					}
-				}
-				if strings.Contains(parts.appendix, "<summary>Validation</summary>") {
-					t.Fatalf("full appendix was folded:\n%s", parts.appendix)
-				}
-			case config.PRAppendixCollapsed:
-				open := strings.Index(parts.appendix, "<details>\n<summary>Validation</summary>")
-				if open < 0 || strings.Contains(parts.appendix, "<details open") {
-					t.Fatalf("collapsed appendix is not a closed Validation block:\n%s", parts.appendix)
-				}
-				if strings.Index(parts.appendix, "## Intent") > open || strings.Index(parts.appendix, "evidence log line") < open {
-					t.Fatalf("collapsed appendix hid intent or left the log outside the fold:\n%s", parts.appendix)
-				}
-			case config.PRAppendixMinimal:
-				for _, banned := range []string{"## Testing", "## Pipeline", "## Risk Assessment", "evidence log line", "<summary>Validation</summary>"} {
-					if strings.Contains(parts.appendix, banned) {
-						t.Fatalf("minimal appendix kept %q:\n%s", banned, parts.appendix)
-					}
+			for _, want := range []string{"## Intent", "Keep the template as the visible body.", "## Risk Assessment", "⚠️ Medium: touches publication", "## Testing", "evidence log line", "## Pipeline"} {
+				if !strings.Contains(comment, want) {
+					t.Fatalf("detailed validation comment missing %q in %s mode:\n%s", want, mode, comment)
 				}
 			}
 		})
@@ -414,8 +397,8 @@ func TestPRTemplateUpdateErrorIsNotMaskedByLegacyWarning(t *testing.T) {
 		t.Fatalf("write failure became a clean success: %+v, %v", out, err)
 	}
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
-	if err != nil || run.PRURL != nil {
-		t.Fatalf("failed first attachment recorded as success: %+v, %v", run, err)
+	if err != nil || run.PRURL == nil || *run.PRURL != "https://github.com/test/repo/pull/42" {
+		t.Fatalf("failed attachment lost its durable recovery identity: %+v, %v", run, err)
 	}
 	logs, _ := os.ReadFile(logFile)
 	if strings.Count(string(logs), "pr edit") != 1 || strings.Contains(string(logs), "pr create") {

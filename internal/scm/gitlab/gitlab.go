@@ -126,7 +126,7 @@ func (h *Host) pipelineJobsArgs(pipelineID int) []string {
 func (h *Host) Provider() scm.Provider { return scm.ProviderGitLab }
 
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: true, ManagedPRComments: true}
 }
 
 func (h *Host) Available(ctx context.Context) error {

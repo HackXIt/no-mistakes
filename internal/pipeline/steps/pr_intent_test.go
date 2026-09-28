@@ -43,15 +43,20 @@ func TestPROmitIntentSuppressionIsTightenOnly(t *testing.T) {
 			}
 			sctx.Config.PR = config.Merge(config.DefaultGlobalConfig(), config.EffectiveRepoConfig(nil, trusted, false)).PR
 			sctx.UserIntent = "Entire original intent remains reviewer input."
-			got, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, 0)
+			step := &PRStep{}
+			got, err := step.buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(got.Body, "## Intent") != tc.wantIntSection {
-				t.Fatalf("runOmit=%v policy=%s: body has Intent section = %v, want %v:\n%s", tc.runOmitIntent, tc.repoPolicy, !tc.wantIntSection, tc.wantIntSection, got.Body)
+			comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if !strings.Contains(got.Body, "## What Changed") {
-				t.Fatalf("body lost its main section:\n%s", got.Body)
+			if strings.Contains(comment, "## Intent") != tc.wantIntSection {
+				t.Fatalf("runOmit=%v policy=%s: comment has Intent section = %v, want %v:\n%s", tc.runOmitIntent, tc.repoPolicy, !tc.wantIntSection, tc.wantIntSection, comment)
+			}
+			if strings.Contains(got.Body, "## Intent") || strings.Contains(got.Body, "## What Changed") || !strings.Contains(got.Body, "A helper") {
+				t.Fatalf("description was not concise:\n%s", got.Body)
 			}
 			// The repository policy alone never withholds the intent from the
 			// drafter; the caller-side omission does (see the test below).
@@ -88,7 +93,12 @@ func TestPROmitIntentWithholdsIntentFromDraftingTurns(t *testing.T) {
 			sctx, ag := tc.setup(t)
 			sctx.UserIntent = secret
 			sctx.Run.OmitIntent = true
-			got, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+			step := &PRStep{}
+			got, err := step.buildPRContent(sctx, "feature", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -100,8 +110,8 @@ func TestPROmitIntentWithholdsIntentFromDraftingTurns(t *testing.T) {
 					t.Fatalf("drafting turn %d received intent text:\n%s", i, call.Prompt)
 				}
 			}
-			if strings.Contains(got.Body, secret) || strings.Contains(got.Body, "## Intent") {
-				t.Fatalf("PR body published withheld intent:\n%s", got.Body)
+			if strings.Contains(got.Body+comment, secret) || strings.Contains(got.Body+comment, "## Intent") {
+				t.Fatalf("publication exposed withheld intent:\n%s\n%s", got.Body, comment)
 			}
 			// Other step prompts are unchanged: the full intent still reaches them.
 			if !strings.Contains(userIntentPromptSection(sctx), secret) {
@@ -148,13 +158,18 @@ func TestPRPublishIntentSuppressionCoversDefaultAgentAndFallback(t *testing.T) {
 				sctx.Config.PR = config.Merge(config.DefaultGlobalConfig(), config.EffectiveRepoConfig(pushed, trusted, true)).PR
 				sctx.UserIntent = "Entire original intent remains reviewer input."
 				for _, limit := range []int{0, 4000} {
-					got, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, limit)
-					if err != nil || strings.Contains(got.Body, "## Intent") != tc.want || !strings.Contains(got.Body, "## What Changed") {
+					step := &PRStep{}
+					got, err := step.buildPRContent(sctx, "feature", "main", base, scm.ProviderGitHub, limit)
+					if err != nil {
 						t.Fatalf("fallback=%v limit=%d: %+v, %v", fallback, limit, got, err)
 					}
-					t.Logf("Generated PR markdown: policy=%s fallback=%v limit=%d\n%s", tc.name, fallback, limit, got.Body)
-					if tc.want && !strings.Contains(got.Body, "## Intent\n\n"+sctx.UserIntent) {
-						t.Fatalf("default/enabled publication lost intent: %s", got.Body)
+					comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+					if err != nil || strings.Contains(comment, "## Intent") != tc.want || strings.Contains(got.Body, "## Intent") {
+						t.Fatalf("fallback=%v limit=%d description=%q comment=%q err=%v", fallback, limit, got.Body, comment, err)
+					}
+					t.Logf("Generated PR publication: policy=%s fallback=%v limit=%d\n%s\n%s", tc.name, fallback, limit, got.Body, comment)
+					if tc.want && !strings.Contains(comment, "## Intent\n\n"+sctx.UserIntent) {
+						t.Fatalf("default/enabled publication lost intent: %s", comment)
 					}
 					if !strings.Contains(ag.calls[len(ag.calls)-1].Prompt, sctx.UserIntent) {
 						t.Fatal("suppression removed full intent from model context")

@@ -489,25 +489,6 @@ func TestCIStep_PublishRepairFailsWhenAttestationCannotSettle(t *testing.T) {
 // This fixture has no available GitLab host, so publication skips attestation
 // interaction. GitLab with an available host supports raw reads and restamping;
 // provider identity alone no longer causes the skip.
-func TestCIStep_PublishRepairSkipsAttestationForNonGitHubProvider(t *testing.T) {
-	f := newCIRepairFixture(t, false, writeCIFix)
-	gitlabPR := "https://gitlab.com/test/repo/-/merge_requests/42"
-	f.sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
-	f.sctx.Run.PRURL = &gitlabPR
-	writeCIFix(f.dir)
-
-	repair, err := (&CIStep{}).commitRepair(f.sctx, "repair the failing check")
-	if err != nil {
-		t.Fatalf("commitRepair: %v\nlog:\n%s", err, f.log())
-	}
-	if !repair.HeadAdvanced || repair.Revalidate {
-		t.Fatalf("repair = %+v, want a published head advance without attestation", repair)
-	}
-	if strings.Contains(f.log(), "pipeline attestation") || strings.Contains(f.log(), "attestation rebind") {
-		t.Fatalf("expected no attestation interaction at all for a non-GitHub provider:\n%s", f.log())
-	}
-}
-
 func TestCIStep_PublishRepairDoesNotMintAttestation(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
 	const foreign = "a regular pull request with no pipeline section"

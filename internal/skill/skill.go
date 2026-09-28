@@ -303,6 +303,13 @@ format - what was validated and what was found. If the output includes a
 acknowledge those misses and explicitly list each fix so the user can easily
 review them.
 
+The published PR/MR description is intentionally a concise squash-commit-style
+narrative plus a compact machine attestation. Detailed validation and evidence
+live in one pipeline-owned comment that no-mistakes updates in place. Do not
+copy logs back into the description, edit the owned comment, or remove the
+description trailer; report the forge URL and let the publication surfaces keep
+their separate ownership.
+
 ## Escalate ` + "`ask-user`" + ` findings
 
 A gate whose findings are all ` + "`auto-fix`" + ` or ` + "`no-op`" + ` is safe to drive on your

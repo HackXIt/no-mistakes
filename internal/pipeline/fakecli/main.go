@@ -109,13 +109,20 @@ func logFakeCLIStdinBody(args []string, logFile string) {
 		return
 	}
 	defer f.Close()
-	fmt.Fprint(f, "stdin --body ")
+	label := "stdin --body "
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--input" && args[i+1] == "-" {
+			label = "stdin --comment "
+			break
+		}
+	}
+	fmt.Fprint(f, label)
 	fmt.Fprintln(f, string(body))
 }
 
 func argsUseStdinBodyFile(args []string) bool {
 	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "--body-file" && args[i+1] == "-" {
+		if (args[i] == "--body-file" || args[i] == "--input") && args[i+1] == "-" {
 			return true
 		}
 	}
@@ -182,7 +189,14 @@ func fakeGHHandler(args []string) {
 	}
 	if len(args) >= 2 && args[0] == "pr" && args[1] == "create" {
 		fakeGHStorePRBody(args)
-		fmt.Println("https://github.com/test/repo/pull/99")
+		repo, _ := fakeCLIFlagValue(args, "--repo")
+		if repo == "" {
+			repo = "test/repo"
+		}
+		if parts := strings.Split(repo, "/"); len(parts) == 3 {
+			repo = strings.Join(parts[1:], "/")
+		}
+		fmt.Printf("https://github.com/%s/pull/99\n", repo)
 		os.Exit(0)
 	}
 	os.Exit(1)
@@ -419,7 +433,98 @@ func fakeGlabHandler(args []string) {
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
 		os.Exit(0)
 	}
+	if len(args) > 0 && args[0] == "api" && strings.Contains(strings.Join(args, " "), "/merge_requests/") && strings.Contains(strings.Join(args, " "), "/notes") {
+		fakeGlabHandleManagedComments(args)
+	}
 	os.Exit(1)
+}
+
+type fakeGitLabNote struct {
+	ID          int64   `json:"id"`
+	Body        *string `json:"body"`
+	NoteableIID int     `json:"noteable_iid"`
+	System      bool    `json:"system"`
+	WebURL      string  `json:"web_url"`
+}
+
+func fakeGlabHandleManagedComments(args []string) {
+	path := os.Getenv("FAKE_CLI_PR_COMMENT_FILE")
+	if path == "" {
+		path = os.Getenv("FAKE_CLI_LOG") + ".comment"
+	}
+	notes := make([]fakeGitLabNote, 0)
+	if data, err := os.ReadFile(path); err == nil {
+		if json.Unmarshal(data, &notes) != nil {
+			fmt.Fprintln(os.Stderr, "invalid fake GitLab note state")
+			os.Exit(1)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	method, _ := fakeCLIFlagValue(args, "--method")
+	if method == "" || method == "GET" {
+		data, _ := json.Marshal(notes)
+		fmt.Println(string(data))
+		os.Exit(0)
+	}
+	payload, err := readFakeBody()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(payload, &input) != nil {
+		fmt.Fprintln(os.Stderr, "invalid fake GitLab note payload")
+		os.Exit(1)
+	}
+	endpoint := ""
+	for _, arg := range args {
+		if strings.Contains(arg, "/merge_requests/") && strings.Contains(arg, "/notes") {
+			endpoint = strings.Split(arg, "?")[0]
+			break
+		}
+	}
+	parts := strings.Split(strings.Trim(endpoint, "/"), "/")
+	iid := 0
+	for i, part := range parts {
+		if part == "merge_requests" && i+1 < len(parts) {
+			iid, _ = strconv.Atoi(parts[i+1])
+		}
+	}
+	if method == "POST" {
+		body := input.Body
+		note := fakeGitLabNote{ID: 777, Body: &body, NoteableIID: iid, WebURL: fmt.Sprintf("https://gitlab.com/test/repo/-/merge_requests/%d#note_777", iid)}
+		notes = append(notes, note)
+		writeFakeGitLabNotes(path, notes)
+		data, _ := json.Marshal(note)
+		fmt.Println(string(data))
+		os.Exit(0)
+	}
+	if method == "PUT" {
+		id, _ := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+		for i := range notes {
+			if notes[i].ID == id {
+				notes[i].Body = &input.Body
+				writeFakeGitLabNotes(path, notes)
+				data, _ := json.Marshal(notes[i])
+				fmt.Println(string(data))
+				os.Exit(0)
+			}
+		}
+	}
+	fmt.Fprintln(os.Stderr, "unsupported fake GitLab note operation")
+	os.Exit(1)
+}
+
+func writeFakeGitLabNotes(path string, notes []fakeGitLabNote) {
+	data, _ := json.Marshal(notes)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func fakeCLIFlagValue(args []string, flag string) (string, bool) {
@@ -452,6 +557,7 @@ func fakeCIGHReconcileHandler(args []string) {
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
 		os.Exit(0)
 	}
+	fakeGHHandlePRContentCommands(args, joined)
 	if strings.Contains(joined, "pr list") {
 		fmt.Println("[]")
 		os.Exit(0)
@@ -506,13 +612,14 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 			title = "test pr"
 		}
 		body := os.Getenv("FAKE_CLI_PR_BODY")
-		if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+		if path, explicit := fakeGHPRBodyPath(); path != "" {
 			data, err := os.ReadFile(path)
-			if err != nil {
+			if err == nil {
+				body = string(data)
+			} else if explicit || !os.IsNotExist(err) {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			body = string(data)
 		}
 		payload, err := json.Marshal(map[string]string{"title": title, "body": body})
 		if err != nil {
@@ -530,10 +637,23 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 		fakeGHStorePRBody(args)
 		os.Exit(0)
 	}
+	if len(args) > 0 && args[0] == "api" && strings.Contains(joined, "/issues/") && strings.Contains(joined, "comments") {
+		fakeGHHandleManagedComments(args)
+	}
+}
+
+func fakeGHPRBodyPath() (string, bool) {
+	if path := os.Getenv("FAKE_CLI_PR_BODY_FILE"); path != "" {
+		return path, true
+	}
+	if logPath := os.Getenv("FAKE_CLI_LOG"); logPath != "" {
+		return logPath + ".body", false
+	}
+	return "", false
 }
 
 func fakeGHStorePRBody(args []string) {
-	path := os.Getenv("FAKE_CLI_PR_BODY_FILE")
+	path, _ := fakeGHPRBodyPath()
 	bodyFile, _ := fakeCLIFlagValue(args, "--body-file")
 	if path == "" || bodyFile != "-" {
 		return // A base-only edit must not erase the fake's body either.
@@ -543,6 +663,112 @@ func fakeGHStorePRBody(args []string) {
 		err = os.WriteFile(path, body, 0o644)
 	}
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+type fakeGHIssueComment struct {
+	ID       int64   `json:"id"`
+	Body     *string `json:"body"`
+	HTMLURL  string  `json:"html_url"`
+	IssueURL string  `json:"issue_url"`
+}
+
+func fakeGHHandleManagedComments(args []string) {
+	path := os.Getenv("FAKE_CLI_PR_COMMENT_FILE")
+	if path == "" {
+		if bodyPath, _ := fakeGHPRBodyPath(); bodyPath != "" {
+			path = bodyPath + ".comment"
+		}
+	}
+	if path == "" {
+		fmt.Fprintln(os.Stderr, "fake managed comments require a state file")
+		os.Exit(1)
+	}
+	comments := make([]fakeGHIssueComment, 0)
+	if data, err := os.ReadFile(path); err == nil {
+		if json.Unmarshal(data, &comments) != nil {
+			fmt.Fprintln(os.Stderr, "invalid fake comment state")
+			os.Exit(1)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	method, _ := fakeCLIFlagValue(args, "--method")
+	joined := strings.Join(args, " ")
+	if method == "GET" || method == "" {
+		data, _ := json.Marshal(comments)
+		fmt.Println(string(data))
+		os.Exit(0)
+	}
+	payload, err := readFakeBody()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(payload, &input) != nil {
+		fmt.Fprintln(os.Stderr, "invalid fake comment payload")
+		os.Exit(1)
+	}
+	if method == "POST" {
+		number := extractNumberBefore(joined, "/comments")
+		repo := "test/repo"
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "repos/") && strings.Contains(arg, "/issues/") {
+				trimmed := strings.TrimPrefix(arg, "repos/")
+				repo, _, _ = strings.Cut(trimmed, "/issues/")
+				break
+			}
+		}
+		body := input.Body
+		comment := fakeGHIssueComment{ID: 777, Body: &body, HTMLURL: "https://github.com/" + repo + "/pull/" + number + "#issuecomment-777", IssueURL: "https://api.github.com/repos/" + repo + "/issues/" + number}
+		comments = append(comments, comment)
+		writeFakeComments(path, comments)
+		data, _ := json.Marshal(comment)
+		fmt.Println(string(data))
+		os.Exit(0)
+	}
+	if method == "PATCH" {
+		id := 0
+		for _, arg := range args {
+			if strings.Contains(arg, "/issues/comments/") {
+				id = extractTrailingNumber(arg)
+				break
+			}
+		}
+		for i := range comments {
+			if comments[i].ID == int64(id) {
+				comments[i].Body = &input.Body
+				writeFakeComments(path, comments)
+				data, _ := json.Marshal(comments[i])
+				fmt.Println(string(data))
+				os.Exit(0)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "fake comment not found")
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "unsupported fake comment method")
+	os.Exit(1)
+}
+
+func extractNumberBefore(text, suffix string) string {
+	before, _, _ := strings.Cut(text, suffix)
+	parts := strings.Split(strings.TrimRight(before, "/"), "/")
+	if len(parts) == 0 {
+		return "0"
+	}
+	return parts[len(parts)-1]
+}
+
+func writeFakeComments(path string, comments []fakeGHIssueComment) {
+	data, _ := json.Marshal(comments)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

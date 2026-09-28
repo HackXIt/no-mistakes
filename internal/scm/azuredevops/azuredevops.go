@@ -85,7 +85,7 @@ func (h *Host) Provider() scm.Provider { return scm.ProviderAzureDevOps }
 // yet wired up - the az CLI has no first-class build-log command, so callers
 // gate on FailedCheckLogs and skip it.
 func (h *Host) Capabilities() scm.Capabilities {
-	return scm.Capabilities{MergeableState: true, FailedCheckLogs: false}
+	return scm.Capabilities{MergeableState: true, FailedCheckLogs: false, ManagedPRComments: true}
 }
 
 // orgArgs scopes a command to the organization. The show/update/policy-list

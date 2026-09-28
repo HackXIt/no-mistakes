@@ -188,16 +188,20 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, true)
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) != 1 {
-		return "", fmt.Errorf("cannot publish template narrative without recorded pipeline evidence and attestation")
+	pipelineMD, _, _ := s.buildPipelineSectionFor(sctx, provider, true)
+	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) == 0 {
+		marker := buildPipelineAttestationWithPolicy(nil, nil, sctx.Run.HeadSHA, attestationPolicyFrom(sctx))
+		if provider == scm.ProviderBitbucket {
+			marker = "```text\n" + marker + "\n```"
+		}
+		pipelineMD = marker
 	}
-	parts := []string{}
-	if intent := publicPRIntent(sctx); intent != "" {
-		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(intent))
+	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) > 1 {
+		return "", fmt.Errorf("cannot publish PR narrative with ambiguous pipeline attestations")
 	}
-	if evidence := appendixEvidence(appendixMode(sctx), prBodyFlavorFor(provider), risk, testing, pipelineMD); evidence != "" {
-		parts = append(parts, evidence)
-	}
-	return strings.Join(parts, "\n\n"), nil
+	// Enforcement remains body-based for compatibility with existing pinned
+	// require-no-mistakes consumers. Human-readable validation is published in
+	// the separately owned comment; the description carries only this compact
+	// machine trailer.
+	return joinBlocks(noMistakesPRSignature, carriedAttestation(pipelineMD)), nil
 }

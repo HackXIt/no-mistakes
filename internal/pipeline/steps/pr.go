@@ -35,7 +35,7 @@ var prContentSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"title": {"type": "string", "description": "Concise pull request title following repository configuration"},
-		"body": {"type": "string", "description": "GitHub-flavored markdown body starting with ## What Changed. Plain text, NOT JSON."}
+		"body": {"type": "string", "description": "Concise squash-commit-style GitHub-flavored markdown description with no title or validation sections. Plain text, NOT JSON."}
 	},
 	"required": ["title", "body"]
 }`)
@@ -119,69 +119,62 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if existing != nil {
-		var live scm.PRContent
-		if reader, ok := host.(scm.PRContentReader); ok {
-			live, err = reader.GetPRContent(ctx, existing)
-			if err != nil {
-				return nil, fmt.Errorf("read existing PR before publication: %w", err)
-			}
-		} else if template != "" {
-			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe template updates")
+		reader, ok := host.(scm.PRContentReader)
+		if !ok {
+			return nil, fmt.Errorf("provider cannot read existing PR content for author-safe publication")
+		}
+		live, err := reader.GetPRContent(ctx, existing)
+		if err != nil {
+			return nil, fmt.Errorf("read existing PR before publication: %w", err)
+		}
+		if err := persistRunPRURL(sctx, existing.URL); err != nil {
+			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
-		updated := existing
-		// Removing pr.template must not switch an already owned body back to
-		// destructive drafting. Its live author narrative still wins.
-		if template != "" || hasPRAppendixMarkers(live.Body) {
-			if _, err := parsePROwnedBody(live.Body); err != nil {
-				return nil, err
-			}
-			var emptyNarrative string
-			var title string
-			if live.Body == "" && template != "" {
+
+		var emptyNarrative string
+		var title string
+		if live.Body == "" {
+			if template != "" {
 				draft, err := s.draftTemplateNarrative(sctx, branch, baseBranch, baseSHA, template)
 				if err != nil {
 					return nil, err
 				}
 				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
 				title = draft.Title
-			} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
-				title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
+			} else {
+				draft, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 				if err != nil {
 					return nil, err
 				}
+				emptyNarrative = neutralizeAttestationMarkers(draft.Body)
+				title = draft.Title
 			}
-			appendix, err := s.buildPRAppendix(sctx, provider)
+		} else if sctx.Config != nil && sctx.Config.PR.TitleFormat != "" {
+			title, err = s.draftConfiguredPRTitle(sctx, branch, baseBranch, baseSHA)
 			if err != nil {
 				return nil, err
-			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
-				return nil, err
-			}
-			if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
-				return nil, err
-			}
-		} else {
-			content, err := s.buildPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
-			if err != nil {
-				return nil, err
-			}
-			if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
-				return nil, err
-			}
-			updated, err = host.UpdatePR(ctx, existing, scm.PRContent(content))
-			if err != nil {
-				// A revalidation cycle may already have pushed a repaired head. Its
-				// attestation is part of delivery, so CI must not run after a failed
-				// update while the existing body still binds the previous head.
-				return nil, fmt.Errorf("update existing pull request: %w", err)
 			}
 		}
-		if updated != nil && updated.URL != "" {
-			if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, updated.URL); err != nil {
-				slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", updated.URL, "err", err)
-			}
-			return &pipeline.StepOutcome{PRURL: updated.URL}, nil
+		appendix, err := s.buildPRAppendix(sctx, provider)
+		if err != nil {
+			return nil, err
+		}
+		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
+			return nil, err
+		}
+		if err := updateOwnedPR(sctx, host, existing, live, title, emptyNarrative, appendix, bodyLimit); err != nil {
+			return nil, err
+		}
+		comment, err := s.renderValidationComment(sctx, provider)
+		if err != nil {
+			return nil, err
+		}
+		if err := publishValidationComment(sctx, host, existing, comment); err != nil {
+			return nil, err
+		}
+		if existing.URL != "" {
+			return &pipeline.StepOutcome{PRURL: existing.URL}, nil
 		}
 		return &pipeline.StepOutcome{}, nil
 	}
@@ -196,27 +189,31 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	if created == nil || strings.TrimSpace(created.URL) == "" {
-		if template != "" {
-			return nil, fmt.Errorf("templated PR create returned no readable PR identity")
-		}
-		return &pipeline.StepOutcome{}, nil
+		return nil, fmt.Errorf("PR create returned no readable review-object identity")
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
-	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, created.URL); err != nil {
-		slog.Warn("failed to persist PR URL", "run", sctx.Run.ID, "url", created.URL, "err", err)
+	if err := persistRunPRURL(sctx, created.URL); err != nil {
+		return nil, err
 	}
 	if template != "" {
 		reader, ok := host.(scm.PRContentReader)
 		if !ok {
-			return nil, fmt.Errorf("provider cannot verify the created template body")
+			return nil, fmt.Errorf("provider cannot verify the created template description")
 		}
 		actual, err := reader.GetPRContent(ctx, created)
 		if err != nil {
-			return nil, fmt.Errorf("verify created templated PR: %w", err)
+			return nil, fmt.Errorf("verify created template description: %w", err)
 		}
 		if actual.Body != content.Body {
-			return nil, fmt.Errorf("created PR body differs from the proposed template and evidence; refusing successful publication")
+			return nil, fmt.Errorf("created PR description differs from the proposed template and compact attestation; refusing successful publication")
 		}
+	}
+	comment, err := s.renderValidationComment(sctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	if err := publishValidationComment(sctx, host, created, comment); err != nil {
+		return nil, err
 	}
 	return &pipeline.StepOutcome{PRURL: created.URL}, nil
 }
@@ -341,6 +338,25 @@ func runPRURL(sctx *pipeline.StepContext) string {
 	return strings.TrimSpace(*sctx.Run.PRURL)
 }
 
+// persistRunPRURL establishes the sole review-object identity before either
+// publication surface is mutated. The managed comment must never be selected
+// from a branch lookup while the durable run still names a sibling PR.
+func persistRunPRURL(sctx *pipeline.StepContext, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if sctx == nil || sctx.Run == nil || raw == "" {
+		return fmt.Errorf("cannot persist an empty pull request identity")
+	}
+	if owned := runPRURL(sctx); owned != "" && !strings.EqualFold(strings.TrimRight(owned, "/"), strings.TrimRight(raw, "/")) {
+		return fmt.Errorf("refusing to replace persisted pull request %s with sibling %s", owned, raw)
+	}
+	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, raw); err != nil {
+		return fmt.Errorf("persist pull request identity: %w", err)
+	}
+	value := raw
+	sctx.Run.PRURL = &value
+	return nil
+}
+
 func samePRIdentity(ownedURL string, discovered *scm.PR) bool {
 	ownedURL = strings.TrimRight(strings.TrimSpace(ownedURL), "/")
 	if ownedURL == "" || discovered == nil {
@@ -404,7 +420,18 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	if err != nil {
 		return prContent{}, err
 	}
-	return redactPRContent(content), nil
+	appendix, err := s.buildPRAppendix(sctx, provider)
+	if err != nil {
+		return prContent{}, err
+	}
+	narrative := neutralizeAttestationMarkers(content.Body)
+	if bodyLimit > 0 {
+		overhead := scm.PRBodyLen("\n\n" + wrapPRAppendix(appendix))
+		if available := bodyLimit - overhead; available > 0 && scm.PRBodyLen(narrative) > available {
+			narrative = scm.ClampPRBody(narrative, available)
+		}
+	}
+	return composeOwnedPRContent(prOwnedBody{before: narrative}, content.Title, appendix, bodyLimit)
 }
 
 // redactPRContent removes the operator's home directory from the content about
@@ -444,7 +471,7 @@ Rules:
 - Cover the full branch delta, not just the latest commit.
 %s
 %s
-- Body: a "## What Changed" section in GitHub-flavored markdown. 1-3 concise bullet points describing the concrete changes in this branch (what code/behavior shifted), not the user's motivation. Do not include Intent, Risk Assessment, Testing, or Pipeline sections - those are prepended/appended separately. The body value must be plain markdown text, never a JSON object or serialized JSON string.
+- Body: a concise squash-commit-style description in GitHub-flavored markdown: one short paragraph or 1-3 brief bullets describing the concrete branch delta. Do not repeat the title, enumerate commits, add a What Changed heading, or include Intent, Risk Assessment, Testing, Pipeline, command output, scenario tables, chronology, or validation logs. The body value must be plain markdown text, never a JSON object or serialized JSON string.
 - Derive every body claim from the final diff. Inspect it directly when the paths and statuses below do not provide enough detail.
 - Do not invent tests or behavior.
 
@@ -476,6 +503,7 @@ Final diff paths and statuses:
 			content.Body = strings.TrimSpace(content.Body)
 			content.Body = unwrapNestedPRBody(content.Body)
 			content.Body = stripGeneratedSections(content.Body)
+			content.Body = normalizeSquashDescription(content.Body)
 			content.Body = neutralizeAttestationMarkers(content.Body)
 			if content.Title != "" && content.Body != "" {
 				originalTitle := content.Title
@@ -486,10 +514,11 @@ Final diff paths and statuses:
 				if content.Title != originalTitle {
 					slog.Warn("normalized agent PR title", "from", originalTitle, "to", content.Title)
 				}
-				if bodyLimit > 0 {
-					content.Body = assemblePRBody(sctx, content.Body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
-				} else {
-					content.Body = buildPRBody(content.Body, riskLine, testingMD, pipelineMD, sctx, provider)
+				// Detailed recorded validation is rendered into the managed PR
+				// comment. Keep the description suitable for a squash commit body.
+				content.Body = truncateEssentialPRBodyIfNeeded(content.Body)
+				if bodyLimit > 0 && scm.PRBodyLen(content.Body) > bodyLimit {
+					content.Body = scm.ClampPRBody(content.Body, bodyLimit)
 				}
 				return content, nil
 			}
@@ -539,6 +568,23 @@ Final diff paths and statuses:
 		return "", err
 	}
 	return title, nil
+}
+
+func normalizeSquashDescription(body string) string {
+	body = strings.TrimSpace(body)
+	lines := strings.Split(body, "\n")
+	if len(lines) == 0 {
+		return body
+	}
+	first := strings.ToLower(strings.TrimSpace(strings.TrimLeft(lines[0], "#")))
+	if first == "summary" || first == "what changed" || first == "description" || first == "overview" {
+		lines = lines[1:]
+		for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+			lines = lines[1:]
+		}
+		body = strings.Join(lines, "\n")
+	}
+	return strings.TrimSpace(body)
 }
 
 func prTitlePromptRules(sctx *pipeline.StepContext) string {
@@ -1500,19 +1546,15 @@ func fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingM
 	if err != nil {
 		return prContent{}, err
 	}
-	diffSummary := strings.TrimSpace(finalDiff)
-	body := "## What Changed\n\nFinal changed paths and statuses:\n\n```text\n" + escapeMarkdownFence(diffSummary) + "\n```"
-	if diffSummary == "" {
-		body = "## What Changed\n\nFinal diff unavailable; no complete scope summary was generated."
+	// A drafting failure must not dump a path/status listing, command output, or
+	// validation history into the squash-commit body. The detailed deterministic
+	// evidence still publishes through the managed validation comment.
+	body := "Updates the final branch delta."
+	if strings.TrimSpace(finalDiff) == "" {
+		body = "Updates the branch; a generated scope summary was unavailable."
 	}
-	body = neutralizeAttestationMarkers(body)
-	if bodyLimit > 0 {
-		body = assemblePRBody(sctx, body, riskLine, testingMD, pipelineMD, bodyLimit, provider)
-	} else {
-		body = buildPRBody(body, riskLine, testingMD, pipelineMD, sctx, provider)
+	if bodyLimit > 0 && scm.PRBodyLen(body) > bodyLimit {
+		body = scm.ClampPRBody(body, bodyLimit)
 	}
-	return prContent{
-		Title: title,
-		Body:  body,
-	}, nil
+	return prContent{Title: title, Body: body}, nil
 }

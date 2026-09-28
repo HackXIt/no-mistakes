@@ -36,6 +36,7 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 	body, title := "", ""
 	exists := false
 	puts := 0
+	commentBody := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		collection := "/2.0/repositories/test/repo/pullrequests"
 		switch {
@@ -62,6 +63,34 @@ func TestPRTemplateBitbucketCreateReadbackUpdateAndPrePush(t *testing.T) {
 			}
 			_ = json.Unmarshal(payload["description"], &body)
 		case r.Method == "GET" && r.URL.Path == collection+"/42":
+		case r.Method == "GET" && r.URL.Path == collection+"/42/comments":
+			if commentBody == "" {
+				fmt.Fprint(w, `{"values":[]}`)
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{"values": []any{map[string]any{"id": 777, "content": map[string]any{"raw": commentBody}}}})
+			}
+			return
+		case r.Method == "POST" && r.URL.Path == collection+"/42/comments":
+			var payload struct {
+				Content struct {
+					Raw string `json:"raw"`
+				} `json:"content"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			commentBody = payload.Content.Raw
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 777, "content": map[string]any{"raw": commentBody}})
+			return
+		case r.Method == "PUT" && r.URL.Path == collection+"/42/comments/777":
+			var payload struct {
+				Content struct {
+					Raw string `json:"raw"`
+				} `json:"content"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			commentBody = payload.Content.Raw
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 777, "content": map[string]any{"raw": commentBody}})
+			return
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(400)

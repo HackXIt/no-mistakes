@@ -351,8 +351,9 @@ func TestPRStep_BuildPRContentRedactsAfterClampingToHostLimit(t *testing.T) {
 	}
 	content := buildHomePathLeakPRContentWithLimit(t, tc, limit)
 	assertNoHomePathLeak(t, tc, content)
-	if got := scm.PRBodyLen(content.Body); got > limit {
-		t.Fatalf("redacted body is %d chars, over the %d cap", got, limit)
+	description, _, _ := strings.Cut(content.Body, validationCommentStart)
+	if got := scm.PRBodyLen(description); got > limit {
+		t.Fatalf("redacted description is %d chars, over the %d cap", got, limit)
 	}
 }
 
@@ -417,10 +418,16 @@ func buildHomePathLeakPRContentWithLimit(t *testing.T, tc homePathLeakCase, body
 		insertCompletedStep(t, sctx, types.StepTest, testFindings, tc.testStepError)
 	}
 
-	content, err := (&PRStep{}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, bodyLimit)
+	step := &PRStep{}
+	content, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, bodyLimit)
 	if err != nil {
 		t.Fatal(err)
 	}
+	comment, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content.Body += "\n\n" + comment
 	return content
 }
 
