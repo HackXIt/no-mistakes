@@ -32,11 +32,11 @@ func TestManagedPRCommentTransport(t *testing.T) {
 		case strings.Contains(joined, "--resource connectionData"):
 			response = `{"authenticatedUser":{"id":"principal-101"}}`
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method GET"):
-			response = `{"count":1,"value":[{"id":21,"comments":[{"id":9,"parentCommentId":0,"content":"provider event","commentType":2,"isDeleted":false},{"id":1,"parentCommentId":0,"content":"old","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}]}]}`
+			response = `{"count":1,"value":[{"id":21,"comments":[{"id":9,"parentCommentId":0,"content":"provider event","commentType":"system","isDeleted":false},{"id":1,"parentCommentId":0,"content":"old","commentType":"text","isDeleted":false,"author":{"id":"principal-101"}}]}]}`
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method POST"):
-			response = `{"id":22,"comments":[{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}]}`
+			response = `{"id":22,"comments":[{"id":1,"parentCommentId":0,"content":"validation body","commentType":"text","isDeleted":false,"author":{"id":"principal-101"}}]}`
 		case strings.Contains(joined, "--resource pullRequestThreadComments") && strings.Contains(joined, "--http-method PATCH"):
-			response = `{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}`
+			response = `{"id":1,"parentCommentId":0,"content":"validation body","commentType":"text","isDeleted":false,"author":{"id":"principal-101"}}`
 		default:
 			response = `{}`
 		}
@@ -65,7 +65,7 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	if len(calls) != 4 || !strings.Contains(calls[1], "pullRequestId=7") || !strings.Contains(calls[3], "threadId=21 commentId=1") {
 		t.Fatalf("comment routes = %#v", calls)
 	}
-	if len(payloads) != 2 || !strings.Contains(payloads[0], `"validation body"`) || !strings.Contains(payloads[1], `"validation body"`) {
+	if len(payloads) != 2 || !strings.Contains(payloads[0], `"validation body"`) || !strings.Contains(payloads[0], `"commentType":1`) || !strings.Contains(payloads[1], `"validation body"`) {
 		t.Fatalf("comment payloads = %#v", payloads)
 	}
 }

@@ -58,7 +58,7 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 			// Azure returns provider-generated system/code-change comments in
 			// the same thread collection as ordinary text comments. Only active
 			// root text comments can be the managed validation comment.
-			if raw.ParentCommentID != 0 || raw.IsDeleted || raw.CommentType != 1 {
+			if raw.ParentCommentID != 0 || raw.IsDeleted || raw.CommentType != "text" {
 				continue
 			}
 			comment, err := normalizeAzureComment(thread.ID, raw, 0, 0)
@@ -156,7 +156,7 @@ type azureComment struct {
 	ID              int     `json:"id"`
 	ParentCommentID int     `json:"parentCommentId"`
 	Content         *string `json:"content"`
-	CommentType     int     `json:"commentType"`
+	CommentType     string  `json:"commentType"`
 	IsDeleted       bool    `json:"isDeleted"`
 	Author          struct {
 		ID string `json:"id"`
@@ -164,7 +164,7 @@ type azureComment struct {
 }
 
 func normalizeAzureComment(threadID int, raw azureComment, expectedThread, expectedComment int) (scm.PRComment, error) {
-	if threadID <= 0 || raw.ID <= 0 || raw.ParentCommentID != 0 || raw.Content == nil || raw.CommentType != 1 || raw.IsDeleted {
+	if threadID <= 0 || raw.ID <= 0 || raw.ParentCommentID != 0 || raw.Content == nil || raw.CommentType != "text" || raw.IsDeleted {
 		return scm.PRComment{}, fmt.Errorf("Azure DevOps PR comment response was incomplete")
 	}
 	if expectedThread > 0 && (threadID != expectedThread || raw.ID != expectedComment) {

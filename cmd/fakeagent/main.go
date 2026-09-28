@@ -86,6 +86,11 @@ type ghStubInvocation struct {
 }
 
 func runGhForkPRStub(args []string) int {
+	if len(args) >= 2 && args[0] == "api" && args[len(args)-1] == "user" {
+		recordGhStubInvocation(args)
+		fmt.Println(`{"id":101,"login":"e2e-gh-user"}`)
+		return 0
+	}
 	if len(args) >= 1 && args[0] == "api" && strings.Contains(strings.Join(args, " "), "/issues/") && strings.Contains(strings.Join(args, " "), "comments") {
 		return runGhManagedCommentStub(args)
 	}
@@ -172,6 +177,9 @@ type ghManagedComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func runGhManagedCommentStub(args []string) int {
@@ -237,6 +245,7 @@ func runGhManagedCommentStub(args []string) int {
 	if method == "POST" {
 		body := input.Body
 		comment := ghManagedComment{ID: 777, Body: &body, HTMLURL: "https://github.com/" + repo + "/pull/" + number + "#issuecomment-777", IssueURL: issueURL}
+		comment.User.ID = 101
 		comments = append(comments, comment)
 		writeGhManagedComments(statePath, comments)
 		data, _ := json.Marshal(comment)
@@ -280,7 +289,7 @@ func runTeaStub(args []string) int {
 	recordTeaStubInvocation(args)
 
 	if len(args) >= 1 && args[0] == "api" && args[len(args)-1] == "/user" {
-		fmt.Println(`{"login":"e2e-tea-user"}`)
+		fmt.Println(`{"id":101,"login":"e2e-tea-user"}`)
 		return 0
 	}
 	if len(args) >= 1 && args[0] == "api" && strings.Contains(args[len(args)-1], "/issues/") && strings.Contains(args[len(args)-1], "comments") {
@@ -325,6 +334,9 @@ type teaManagedComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func runTeaManagedCommentStub(args []string) int {
@@ -355,6 +367,7 @@ func runTeaManagedCommentStub(args []string) int {
 	number := strings.SplitN(issuePart, "/", 2)[0]
 	if method == "POST" {
 		comment := teaManagedComment{ID: 777, Body: &body, HTMLURL: "https://" + host + "/" + repo + "/pulls/" + number + "#issuecomment-777", IssueURL: "https://" + host + "/api/v1/repos/" + repo + "/issues/" + number}
+		comment.User.ID = 101
 		comments = append(comments, comment)
 		writeTeaManagedComments(statePath, comments)
 		data, _ := json.Marshal(comment)

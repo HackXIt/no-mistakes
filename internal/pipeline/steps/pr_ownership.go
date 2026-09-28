@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -24,8 +25,6 @@ var (
 	prOwnershipAttrsPattern           = regexp.MustCompile(`^ narrative_sha256=([0-9a-f]{64}|-) title_sha256=([0-9a-f]{64}|-)$`)
 	legacyPipelineOmissionPattern     = regexp.MustCompile(`^_\.\.\. \([1-9][0-9]* earlier update rounds? omitted to keep the PR body within GitHub's 65536-char limit; full history is in the run log\.\)_`)
 	legacyConversationOmissionPattern = regexp.MustCompile(`^[1-9][0-9]* further review question\(s\) omitted for length\.$`)
-	legacyFindingSummaryPattern       = regexp.MustCompile(`^[1-9][0-9]* (?:errors?|warnings?|infos?|issues?)(?: \((?:[1-9][0-9]* (?:errors?|warnings?|infos?))(?:, [1-9][0-9]* (?:errors?|warnings?|infos?))*\))?$`)
-	legacyFixSummaryPattern           = regexp.MustCompile(`^[1-9][0-9]* issues? found(?: → (?:auto-fixed|no changes applied|fix attempted; result not reported)(?: \((?:[2-9]|[1-9][0-9]+)\))?)* ✅$`)
 )
 
 func hasPRAppendixMarkers(body string) bool {
@@ -230,6 +229,99 @@ func canonicalLegacyReviewConversation(section string) bool {
 	return entries > 0
 }
 
+func legacySeverityCount(value string) (int, int, bool) {
+	fields := strings.Fields(value)
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	count, err := strconv.Atoi(fields[0])
+	if err != nil || count <= 0 {
+		return 0, 0, false
+	}
+	labels := []string{"error", "warning", "info"}
+	for rank, label := range labels {
+		expected := label
+		if count != 1 {
+			expected += "s"
+		}
+		if fields[1] == expected {
+			return count, rank, true
+		}
+	}
+	return 0, 0, false
+}
+
+func canonicalLegacyFindingSummary(outcome string) bool {
+	separator := strings.Index(outcome, " issues (")
+	if separator < 0 {
+		_, _, ok := legacySeverityCount(outcome)
+		return ok
+	}
+	if !strings.HasSuffix(outcome, ")") {
+		return false
+	}
+	total, err := strconv.Atoi(outcome[:separator])
+	if err != nil || total < 2 {
+		return false
+	}
+	parts := strings.Split(outcome[separator+len(" issues ("):len(outcome)-1], ", ")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+	sum, previousRank := 0, -1
+	for _, part := range parts {
+		count, rank, ok := legacySeverityCount(part)
+		if !ok || rank <= previousRank {
+			return false
+		}
+		sum += count
+		previousRank = rank
+	}
+	return sum == total
+}
+
+func canonicalLegacyFixSummary(outcome string) bool {
+	if !strings.HasSuffix(outcome, " ✅") {
+		return false
+	}
+	parts := strings.Split(strings.TrimSuffix(outcome, " ✅"), " → ")
+	initial := strings.Fields(parts[0])
+	if len(initial) != 3 || initial[2] != "found" {
+		return false
+	}
+	count, err := strconv.Atoi(initial[0])
+	if err != nil || count <= 0 || (count == 1 && initial[1] != "issue") || (count != 1 && initial[1] != "issues") {
+		return false
+	}
+	outcomes := []string{"auto-fixed", "no changes applied", "fix attempted; result not reported"}
+	previousRank := -1
+	for _, part := range parts[1:] {
+		base := part
+		if open := strings.LastIndex(part, " ("); open >= 0 {
+			if !strings.HasSuffix(part, ")") {
+				return false
+			}
+			rounds, err := strconv.Atoi(part[open+2 : len(part)-1])
+			if err != nil || rounds < 2 {
+				return false
+			}
+			base = part[:open]
+		}
+		rank := -1
+		for i, candidate := range outcomes {
+			if base == candidate {
+				rank = i
+				break
+			}
+		}
+		if rank <= previousRank {
+			return false
+		}
+		previousRank = rank
+	}
+	return true
+}
+
 func canonicalLegacyStepSummary(summary string) bool {
 	separator := strings.Index(summary, " **")
 	if separator <= 0 {
@@ -258,9 +350,9 @@ func canonicalLegacyStepSummary(summary string) bool {
 	case "🚨":
 		return outcome == "high risk"
 	case "⚠️":
-		return outcome == "findings unavailable" || outcome == "medium risk" || legacyFindingSummaryPattern.MatchString(outcome)
+		return outcome == "findings unavailable" || outcome == "medium risk" || canonicalLegacyFindingSummary(outcome)
 	case "🔧":
-		return legacyFixSummaryPattern.MatchString(outcome)
+		return canonicalLegacyFixSummary(outcome)
 	default:
 		return false
 	}

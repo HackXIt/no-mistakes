@@ -599,6 +599,7 @@ func TestLegacyGeneratedDescriptionMigrationAcceptsFormerStepSummaries(t *testin
 		"🚨 **Review** - high risk",
 		"⚠️ **Review** - 3 issues (1 error, 2 warnings)",
 		"🔧 **Review** - 3 issues found → auto-fixed (2) ✅",
+		"🔧 **Review** - 3 issues found → auto-fixed → no changes applied (2) → fix attempted; result not reported ✅",
 		"✅ **Lint** - passed",
 	}
 	for _, summary := range summaries {
@@ -636,6 +637,10 @@ func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t
 		"malformed details":         "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nQuoted context.",
 		"author archive details":    "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Author archive</summary>\n\nQuoted context.\n</details>",
 		"invented status details":   "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - archived</summary>\n\nQuoted context.\n</details>",
+		"reordered severities":      "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>⚠️ **Review** - 2 issues (1 warning, 1 error)</summary>\n\nQuoted context.\n</details>",
+		"wrong severity total":      "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>⚠️ **Review** - 3 issues (1 error, 1 warning)</summary>\n\nQuoted context.\n</details>",
+		"duplicate fix outcome":     "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>🔧 **Review** - 2 issues found → auto-fixed → auto-fixed ✅</summary>\n\nQuoted context.\n</details>",
+		"reordered fix outcomes":    "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>🔧 **Review** - 2 issues found → no changes applied → auto-fixed ✅</summary>\n\nQuoted context.\n</details>",
 		"fenced minimal":            "```text\n" + minimal + "\n```",
 		"embedded minimal":          "Author archive:\n\n" + minimal + "\n\nHuman suffix.",
 		"duplicated minimal marker": minimal + "\n\n" + minimal,
