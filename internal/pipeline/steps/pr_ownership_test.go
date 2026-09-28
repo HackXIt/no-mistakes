@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
@@ -14,7 +15,7 @@ import (
 func ownedFixture(t *testing.T) (prContent, string) {
 	t.Helper()
 	appendix := "## Risk Assessment\n\nLow recorded risk.\n\n## Testing\n\nRecorded evidence link.\n\n" + compliantPipelineBody(t, testPipelineHeadSHA)
-	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, "feat: story", appendix, 0)
+	content, err := composeOwnedPRContent(prOwnedBody{before: "## Testing\n\n- [x] Human checked this\n\nCloses test/repo#7"}, "feat: story", appendix, 0, scm.ProviderUnknown)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +30,7 @@ func TestPROwnershipNeverInfersFromHeadings(t *testing.T) {
 		t.Fatalf("heading resemblance claimed author content: %+v, %v", parts, err)
 	}
 	_, appendix := ownedFixture(t)
-	got, err := composeOwnedPRContent(parts, "", appendix, 0)
+	got, err := composeOwnedPRContent(parts, "", appendix, 0, scm.ProviderUnknown)
 	if err != nil || !strings.HasPrefix(got.Body, body) {
 		t.Fatalf("author headings removed: %s, %v", got.Body, err)
 	}
@@ -71,14 +72,14 @@ func TestPROwnershipFailsSizePressureWithoutTruncation(t *testing.T) {
 		{before: strings.Repeat("author\n", maxPullRequestBodyBytes)},
 		{before: "author", after: strings.Repeat("closing refs\n", maxPullRequestBodyBytes), managed: true},
 	} {
-		if _, err := composeOwnedPRContent(parts, "", appendix, 0); err == nil {
+		if _, err := composeOwnedPRContent(parts, "", appendix, 0, scm.ProviderUnknown); err == nil {
 			t.Fatal("oversized author content was truncated")
 		}
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, "", appendix+strings.Repeat("evidence\n", maxPullRequestBodyBytes), 0); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: "author"}, "", appendix+strings.Repeat("evidence\n", maxPullRequestBodyBytes), 0, scm.ProviderUnknown); err == nil {
 		t.Fatal("oversized evidence was dropped")
 	}
-	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, "", appendix, 400); err == nil {
+	if _, err := composeOwnedPRContent(prOwnedBody{before: strings.Repeat("😀", 100)}, "", appendix, 400, scm.ProviderUnknown); err == nil {
 		t.Fatal("provider character cap ignored")
 	}
 }
@@ -87,7 +88,7 @@ func TestPROwnershipPublicationRedactionPrecedesDigest(t *testing.T) {
 	t.Parallel()
 	_, appendix := ownedFixture(t)
 	appendix += "\n\nEvidence /Users/private/evidence.png\n```text\n" + prAppendixEnd + "\n```"
-	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, "feat: /Users/person/path", appendix, 0)
+	got, err := composeOwnedPRContent(prOwnedBody{before: "## Overview\n\n/home/person/work\n\n", after: "\nC:\\Users\\person\\notes", managed: true}, "feat: /Users/person/path", appendix, 0, scm.ProviderUnknown)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +115,7 @@ type ownershipRaceHost struct {
 	read       func(*ownershipRaceHost) error
 	writeError error
 	afterWrite string
+	provider   scm.Provider
 }
 
 func (h *ownershipRaceHost) GetPRContent(context.Context, *scm.PR) (scm.PRContent, error) {
@@ -136,7 +138,11 @@ func (h *ownershipRaceHost) UpdatePR(_ context.Context, pr *scm.PR, content scm.
 		if !h.allowTitle {
 			return nil, errors.New("must leave author title alone")
 		}
-		h.title = content.Title
+		if h.provider == scm.ProviderGitLab && titleOwnershipValue(h.provider, h.title) != h.title && titleOwnershipValue(h.provider, content.Title) == content.Title {
+			h.title = "Draft: " + content.Title
+		} else {
+			h.title = content.Title
+		}
 	}
 	if h.writeError != nil {
 		return nil, h.writeError
@@ -156,7 +162,7 @@ func TestPROwnershipUpdateMergesLatestAuthorEdits(t *testing.T) {
 		return nil
 	}}
 	sctx := &pipeline.StepContext{Ctx: context.Background()}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", false, appendix+"\nNew recorded fact.", 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(content), "", "", false, appendix+"\nNew recorded fact.", 0, scm.ProviderUnknown); err != nil {
 		t.Fatal(err)
 	}
 	if host.writes != 1 || !strings.Contains(host.body, "Human updated checkbox label") || !strings.HasSuffix(host.body, "Fixes test/other#9") || !strings.Contains(host.body, "New recorded fact.") {
@@ -171,14 +177,14 @@ func TestPROwnershipRefreshesGeneratedContentAndPreservesHumanEdits(t *testing.T
 		before:             "First generated narrative.",
 		generatedNarrative: true,
 		generatedTitle:     true,
-	}, "feat: first generated title", appendix, 0)
+	}, "feat: first generated title", appendix, 0, scm.ProviderUnknown)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	host := &ownershipRaceHost{body: generated.Body, title: generated.Title, allowTitle: true}
 	sctx := &pipeline.StepContext{Ctx: context.Background()}
-	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(generated), "feat: second generated title", "Second generated narrative.", true, appendix, 0); err != nil {
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent(generated), "feat: second generated title", "Second generated narrative.", true, appendix, 0, scm.ProviderUnknown); err != nil {
 		t.Fatal(err)
 	}
 	parts, err := parsePROwnedBody(host.body)
@@ -191,7 +197,7 @@ func TestPROwnershipRefreshesGeneratedContentAndPreservesHumanEdits(t *testing.T
 
 	humanBody := strings.Replace(generated.Body, "First generated narrative.", "Human-edited narrative.", 1)
 	human := &ownershipRaceHost{body: humanBody, title: "Human-edited title", allowTitle: true}
-	if err := updateOwnedPR(sctx, human, &scm.PR{Number: "42"}, scm.PRContent{Title: human.title, Body: human.body}, "feat: replacement title", "Replacement narrative.", true, appendix, 0); err != nil {
+	if err := updateOwnedPR(sctx, human, &scm.PR{Number: "42"}, scm.PRContent{Title: human.title, Body: human.body}, "feat: replacement title", "Replacement narrative.", true, appendix, 0, scm.ProviderUnknown); err != nil {
 		t.Fatal(err)
 	}
 	parts, err = parsePROwnedBody(human.body)
@@ -200,6 +206,43 @@ func TestPROwnershipRefreshesGeneratedContentAndPreservesHumanEdits(t *testing.T
 	}
 	if !strings.Contains(parts.before, "Human-edited narrative.") || human.title != "Human-edited title" || parts.generatedNarrative || parts.generatedTitle {
 		t.Fatalf("human-owned content was replaced or retained generated ownership: parts=%+v title=%q", parts, human.title)
+	}
+}
+
+func TestPROwnershipRefreshesGitLabDraftTitles(t *testing.T) {
+	t.Parallel()
+	_, appendix := ownedFixture(t)
+	generated, err := composeOwnedPRContent(prOwnedBody{
+		before:             "First generated narrative.",
+		generatedNarrative: true,
+		generatedTitle:     true,
+	}, "feat: first generated title", appendix, 0, scm.ProviderGitLab)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := &ownershipRaceHost{
+		body:       generated.Body,
+		title:      "Draft: " + generated.Title,
+		allowTitle: true,
+		provider:   scm.ProviderGitLab,
+	}
+	sctx := &pipeline.StepContext{Ctx: context.Background()}
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: host.body}, "feat: second generated title", "Second generated narrative.", true, appendix, 0, scm.ProviderGitLab); err != nil {
+		t.Fatal(err)
+	}
+	parts, err := parsePROwnedBody(host.body)
+	if err != nil || host.title != "Draft: feat: second generated title" || !generatedTitleOwned(parts, host.title, scm.ProviderGitLab) {
+		t.Fatalf("GitLab draft title did not refresh or settle: parts=%+v title=%q err=%v", parts, host.title, err)
+	}
+
+	host.title = "Draft: Human-edited title"
+	sctx.Config = &config.Config{PR: config.PR{TitleFormat: "[{title}]"}}
+	if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: host.body}, "fix: configured title", "Third generated narrative.", true, appendix, 0, scm.ProviderGitLab); err != nil {
+		t.Fatal(err)
+	}
+	if host.title != "Draft: fix: configured title" {
+		t.Fatalf("configured title did not retain authority: %q", host.title)
 	}
 }
 
@@ -235,7 +278,7 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 			case "size":
 				initial.Body = strings.Repeat("Author content\n", maxPullRequestBodyBytes)
 			}
-			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", false, appendix+"\nNew fact", 0)
+			err := updateOwnedPR(&pipeline.StepContext{Ctx: context.Background()}, host, &scm.PR{Number: "42"}, scm.PRContent(initial), "", "", false, appendix+"\nNew fact", 0, scm.ProviderUnknown)
 			if err == nil || host.writes != wantWrites {
 				t.Fatalf("err=%v, writes=%d want %d", err, host.writes, wantWrites)
 			}
@@ -245,9 +288,19 @@ func TestPROwnershipUpdateFailuresNeverReadAsSuccess(t *testing.T) {
 
 func TestPROwnershipRestampPreservesAuthorsAndConsumerContract(t *testing.T) {
 	t.Parallel()
-	content, _ := ownedFixture(t)
-	content.Body += "\n\nFixes test/other#9"
+	content, appendix := ownedFixture(t)
 	parts, err := parsePROwnedBody(content.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts.generatedNarrative = true
+	parts.generatedTitle = true
+	content, err = composeOwnedPRContent(parts, "feat: generated title", appendix, 0, scm.ProviderUnknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content.Body += "\n\nFixes test/other#9"
+	parts, err = parsePROwnedBody(content.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +310,7 @@ func TestPROwnershipRestampPreservesAuthorsAndConsumerContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	rebound, err := parsePROwnedBody(host.body)
-	if err != nil || rebound.before != parts.before || rebound.after != parts.after || host.title != "Author's title" {
+	if err != nil || rebound.before != parts.before || rebound.after != parts.after || !rebound.generatedNarrative || !rebound.generatedTitle || rebound.generatedTitleSHA != parts.generatedTitleSHA || host.title != "Author's title" {
 		t.Fatalf("restamp invalidated ownership or author content: %+v, %v", rebound, err)
 	}
 	if got, out := runVerifyPy(t, content.Body, newHead); got != "failure" {

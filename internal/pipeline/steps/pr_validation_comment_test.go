@@ -210,7 +210,7 @@ func TestPRStep_RefreshesGeneratedNarrativeAcrossHeads(t *testing.T) {
 	ag := &mockAgent{name: "test", runFn: func(_ context.Context, _ agent.RunOpts) (*agent.Result, error) {
 		calls++
 		body := "First generated narrative."
-		if calls == 2 {
+		if calls >= 2 {
 			body = "Second generated narrative."
 		}
 		payload, err := json.Marshal(prContent{Title: "feat: stable generated title", Body: body})
@@ -236,6 +236,17 @@ func TestPRStep_RefreshesGeneratedNarrativeAcrossHeads(t *testing.T) {
 	if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, secondHead); err != nil {
 		t.Fatal(err)
 	}
+	firstBody, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restamped, rebound, err := rebindOwnedPRAttestation(string(firstBody), secondHead, nil, pipelineAttestationPolicy{})
+	if err != nil || !rebound {
+		t.Fatalf("pre-push restamp failed: rebound=%v err=%v", rebound, err)
+	}
+	if err := os.WriteFile(bodyFile, []byte(restamped), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +261,8 @@ func TestPRStep_RefreshesGeneratedNarrativeAcrossHeads(t *testing.T) {
 	if _, err := step.Execute(sctx); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("same-head publication redrafted generated content: calls=%d", calls)
+	if calls != 3 {
+		t.Fatalf("each PR execution must redraft still-owned content: calls=%d", calls)
 	}
 	parts, err := parsePROwnedBody(string(body))
 	if err != nil || !parts.generatedNarrative || parts.generatedTitle {
@@ -364,7 +375,7 @@ func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 		t.Fatalf("legacy migration changed visible text: %+v", parts)
 	}
 	appendix := joinBlocks(noMistakesPRSignature, legacyMarker)
-	content, err := composeOwnedPRContent(parts, "", appendix, 0)
+	content, err := composeOwnedPRContent(parts, "", appendix, 0, scm.ProviderUnknown)
 	if err != nil {
 		t.Fatal(err)
 	}

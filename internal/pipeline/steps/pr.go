@@ -164,7 +164,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 			if err != nil {
 				return nil, err
 			}
-			if hasGeneratedPRContent(parts, live) && parts.attestedHead != sctx.Run.HeadSHA {
+			if hasGeneratedPRContent(parts, live, provider) {
 				draft, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 				if err != nil {
 					return nil, err
@@ -191,7 +191,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err := retargetExistingPRIfNeeded(sctx, host, existing, runPRBaseBranch(sctx)); err != nil {
 			return nil, err
 		}
-		if err := updateOwnedPR(sctx, host, existing, live, title, narrative, generated, appendix, bodyLimit); err != nil {
+		if err := updateOwnedPR(sctx, host, existing, live, title, narrative, generated, appendix, bodyLimit, provider); err != nil {
 			return nil, err
 		}
 		comment, err := s.renderValidationComment(sctx, provider)
@@ -442,7 +442,7 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 		if err != nil {
 			return prContent{}, err
 		}
-		return composeOwnedPRContent(prOwnedBody{before: neutralizeAttestationMarkers(content.Body)}, content.Title, appendix, bodyLimit)
+		return composeOwnedPRContent(prOwnedBody{before: neutralizeAttestationMarkers(content.Body)}, content.Title, appendix, bodyLimit, provider)
 	}
 	content, err := s.draftPRContent(sctx, branch, baseBranch, baseSHA, provider, bodyLimit)
 	if err != nil {
@@ -455,13 +455,13 @@ func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, 
 	narrative := neutralizeAttestationMarkers(content.Body)
 	ownership := prOwnedBody{before: narrative, generatedNarrative: true, generatedTitle: true}
 	if bodyLimit > 0 {
-		overhead := scm.PRBodyLen("\n\n" + wrapOwnedPRAppendix(ownership, content.Title, appendix))
+		overhead := scm.PRBodyLen("\n\n" + wrapOwnedPRAppendix(ownership, content.Title, appendix, provider))
 		if available := bodyLimit - overhead; available > 0 && scm.PRBodyLen(narrative) > available {
 			narrative = scm.ClampPRBody(narrative, available)
 			ownership.before = narrative
 		}
 	}
-	return composeOwnedPRContent(ownership, content.Title, appendix, bodyLimit)
+	return composeOwnedPRContent(ownership, content.Title, appendix, bodyLimit, provider)
 }
 
 // redactPRContent removes the operator's home directory from the content about

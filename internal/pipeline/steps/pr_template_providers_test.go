@@ -43,7 +43,7 @@ func TestPRTemplateProviderCompositionUpdateAndRestamp(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", false, appendix+"\nNew recorded fact.", budget); err != nil {
+			if err := updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: host.title, Body: old}, "", "", false, appendix+"\nNew recorded fact.", budget, provider); err != nil {
 				t.Fatal(err)
 			}
 			parts, err := parsePROwnedBody(host.body)
@@ -75,7 +75,7 @@ func TestPRTemplateAzureRestampRefusesOverflowBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	parts.before += padding + "\n"
-	content, err = composeOwnedPRContent(parts, "", appendix, 4000)
+	content, err = composeOwnedPRContent(parts, "", appendix, 4000, scm.ProviderAzureDevOps)
 	if err != nil {
 		t.Fatal(err)
 	}

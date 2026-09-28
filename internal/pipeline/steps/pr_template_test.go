@@ -487,7 +487,7 @@ func TestPRTemplateIncompleteGitHubReadsNeverOverwriteAuthor(t *testing.T) {
 						t.Fatal(reason)
 					}
 					_, appendix := ownedFixture(t)
-					err = updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: author}, "", "", false, appendix, 0)
+					err = updateOwnedPR(sctx, host, &scm.PR{Number: "42"}, scm.PRContent{Title: "Author title", Body: author}, "", "", false, appendix, 0, scm.ProviderUnknown)
 				}
 				if err == nil {
 					t.Fatal("incomplete read permitted publication")

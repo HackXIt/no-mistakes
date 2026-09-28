@@ -34,7 +34,6 @@ type prOwnedBody struct {
 	generatedNarrative      bool
 	generatedTitle          bool
 	generatedTitleSHA       string
-	attestedHead            string
 }
 
 // The digest is an accidental-edit/ownership guard, NOT authentication. PR
@@ -95,7 +94,6 @@ func parsePROwnedBody(body string) (prOwnedBody, error) {
 	if !ok || json.Unmarshal([]byte(payload), &attestation) != nil || attestation.HeadSHA == "" {
 		return prOwnedBody{}, fmt.Errorf("malformed attestation in PR appendix")
 	}
-	parts.attestedHead = attestation.HeadSHA
 	return parts, nil
 }
 
@@ -138,19 +136,42 @@ func (f *markdownFence) consume(raw string) {
 	}
 }
 
-func generatedTitleOwned(parts prOwnedBody, title string) bool {
+func generatedTitleOwned(parts prOwnedBody, title string, provider scm.Provider) bool {
+	title = titleOwnershipValue(provider, title)
 	return parts.generatedTitle && fmt.Sprintf("%x", sha256.Sum256([]byte(title))) == parts.generatedTitleSHA
 }
 
-func hasGeneratedPRContent(parts prOwnedBody, current scm.PRContent) bool {
-	return parts.generatedNarrative || generatedTitleOwned(parts, current.Title)
+func hasGeneratedPRContent(parts prOwnedBody, current scm.PRContent, provider scm.Provider) bool {
+	return parts.generatedNarrative || generatedTitleOwned(parts, current.Title, provider)
+}
+
+func titleOwnershipValue(provider scm.Provider, title string) string {
+	if provider != scm.ProviderGitLab {
+		return title
+	}
+	trimmed := strings.TrimSpace(title)
+	lower := strings.ToLower(trimmed)
+	for _, prefix := range []string{"draft:", "[draft]", "(draft)"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(trimmed[len(prefix):])
+		}
+	}
+	return title
+}
+
+func titleUpdateSettled(provider scm.Provider, current, proposed, verified string) bool {
+	expected := proposed
+	if provider == scm.ProviderGitLab && titleOwnershipValue(provider, current) != current && titleOwnershipValue(provider, proposed) == proposed {
+		expected = "Draft: " + proposed
+	}
+	return verified == expected
 }
 
 func wrapPRAppendix(appendix string) string {
 	return fmt.Sprintf("%s%x -->\n%s\n%s", prAppendixStart, sha256.Sum256([]byte(appendix)), appendix, prAppendixEnd)
 }
 
-func wrapOwnedPRAppendix(parts prOwnedBody, title, appendix string) string {
+func wrapOwnedPRAppendix(parts prOwnedBody, title, appendix string, provider scm.Provider) string {
 	attrs := ""
 	if parts.generatedNarrative || parts.generatedTitle {
 		narrativeSHA := "-"
@@ -161,7 +182,7 @@ func wrapOwnedPRAppendix(parts prOwnedBody, title, appendix string) string {
 		if parts.generatedTitle {
 			titleSHA = parts.generatedTitleSHA
 			if title != "" {
-				titleSHA = fmt.Sprintf("%x", sha256.Sum256([]byte(title)))
+				titleSHA = fmt.Sprintf("%x", sha256.Sum256([]byte(titleOwnershipValue(provider, title))))
 			}
 			if titleSHA == "" {
 				titleSHA = "-"
@@ -204,7 +225,7 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 // publication fails. That includes suffix text/closing lines added after the
 // generated block. Model-authored copies of ownership markers in evidence are
 // escaped before the actual delimiters are inserted, like foreign attestations.
-func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int) (prContent, error) {
+func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}).Body
 	after := redactPRContent(prContent{Body: parts.after}).Body
 	appendix = prAppendixMarkerPattern.ReplaceAllStringFunc(appendix, func(marker string) string {
@@ -219,7 +240,7 @@ func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit 
 	title = redactPRContent(prContent{Title: title}).Title
 	parts.before = before
 	parts.after = after
-	content := prContent{Title: title, Body: before + wrapOwnedPRAppendix(parts, title, appendix) + after}
+	content := prContent{Title: title, Body: before + wrapOwnedPRAppendix(parts, title, appendix, provider) + after}
 	if err := validateOwnedPRBudget(content.Body, bodyLimit); err != nil {
 		return prContent{}, err
 	}
@@ -240,7 +261,7 @@ func validateOwnedPRBudget(body string, bodyLimit int) error {
 // This is NOT compare-and-swap: providers expose full-body writes. Detected
 // pre-write edits are merged from their latest version (bounded); a write error
 // or post-write divergence fails without replaying a potentially applied write.
-func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, narrative string, generated bool, appendix string, bodyLimit int) error {
+func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initial scm.PRContent, title, narrative string, generated bool, appendix string, bodyLimit int, provider scm.Provider) error {
 	reader, ok := host.(scm.PRContentReader)
 	if !ok {
 		return fmt.Errorf("provider cannot read PR content; author-safe publication updates are unsupported")
@@ -252,7 +273,8 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 			return err
 		}
 		writeTitle := title
-		titleOwned := generatedTitleOwned(parts, current.Title)
+		titleOwned := generatedTitleOwned(parts, current.Title, provider)
+		configuredTitle := title != "" && sctx.Config != nil && sctx.Config.PR.TitleFormat != ""
 		if parts.generatedTitle && !titleOwned {
 			parts.generatedTitle = false
 			parts.generatedTitleSHA = ""
@@ -266,14 +288,14 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 				if parts.generatedNarrative {
 					parts.before = strings.TrimRight(narrative, "\n") + "\n\n"
 				}
-				if !titleOwned {
+				if !titleOwned && !configuredTitle {
 					writeTitle = ""
 				}
 			}
 		} else if current.Body == "" && !parts.managed {
 			parts.before = narrative
 		}
-		content, err := composeOwnedPRContent(parts, writeTitle, appendix, bodyLimit)
+		content, err := composeOwnedPRContent(parts, writeTitle, appendix, bodyLimit, provider)
 		if err != nil {
 			return err
 		}
@@ -294,7 +316,7 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 		if err != nil {
 			return fmt.Errorf("verify PR publication update: %w", err)
 		}
-		if verified.Body != content.Body || (content.Title != "" && verified.Title != content.Title) {
+		if verified.Body != content.Body || (content.Title != "" && !titleUpdateSettled(provider, current.Title, content.Title, verified.Title)) {
 			return fmt.Errorf("PR content changed or update did not settle; refusing to report successful publication")
 		}
 		return nil
@@ -318,7 +340,7 @@ func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult, policy 
 	if !rebound {
 		return "", false, fmt.Errorf("cannot rebind the owned PR attestation")
 	}
-	updated := parts.before + wrapPRAppendix(appendix) + parts.after
+	updated := parts.before + wrapOwnedPRAppendix(parts, "", appendix, scm.ProviderUnknown) + parts.after
 	if len(updated) > maxPullRequestBodyBytes {
 		return "", false, fmt.Errorf("restamped PR body exceeds the publication budget")
 	}
