@@ -13,6 +13,20 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	out, err := h.cmd(ctx, "glab", h.commentAPIArgs("user")...).Output()
+	if err != nil {
+		return "", fmt.Errorf("glab api authenticated user: %w", err)
+	}
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	if json.Unmarshal(out, &user) != nil || user.ID <= 0 {
+		return "", fmt.Errorf("GitLab authenticated user response was incomplete")
+	}
+	return strconv.FormatInt(user.ID, 10), nil
+}
+
 func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment, error) {
 	project, iid, err := h.prCommentIdentity(pr)
 	if err != nil {
@@ -101,6 +115,9 @@ type gitlabNote struct {
 	NoteableIID int     `json:"noteable_iid"`
 	System      bool    `json:"system"`
 	WebURL      string  `json:"web_url"`
+	Author      struct {
+		ID int64 `json:"id"`
+	} `json:"author"`
 }
 
 func normalizeNote(raw gitlabNote, iid int, expectedID int64) (scm.PRComment, error) {
@@ -110,7 +127,11 @@ func normalizeNote(raw gitlabNote, iid int, expectedID int64) (scm.PRComment, er
 	if expectedID > 0 && raw.ID != expectedID {
 		return scm.PRComment{}, fmt.Errorf("GitLab merge request note identity mismatch: got %d, expected %d", raw.ID, expectedID)
 	}
-	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.WebURL}, nil
+	principal := ""
+	if raw.Author.ID > 0 {
+		principal = strconv.FormatInt(raw.Author.ID, 10)
+	}
+	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.WebURL, Principal: principal}, nil
 }
 
 func (h *Host) prCommentIdentity(pr *scm.PR) (string, int, error) {

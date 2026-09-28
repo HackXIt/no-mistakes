@@ -7,12 +7,26 @@ import (
 )
 
 type PRComment struct {
-	ID   int
-	Body string
-	URL  string
+	ID        int
+	Body      string
+	URL       string
+	Principal string
 }
 
 const maxBitbucketPRCommentPages = 100
+
+func (c *Client) AuthenticatedPrincipal(ctx context.Context) (string, error) {
+	var user struct {
+		UUID string `json:"uuid"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/2.0/user", nil, nil, &user); err != nil {
+		return "", err
+	}
+	if user.UUID == "" {
+		return "", fmt.Errorf("Bitbucket authenticated user response was incomplete")
+	}
+	return user.UUID, nil
+}
 
 func (c *Client) ListPRComments(ctx context.Context, repo RepoRef, prID int) ([]PRComment, error) {
 	next := fmt.Sprintf("%s/%d/comments?pagelen=100", repoPRPath(repo), prID)
@@ -96,6 +110,9 @@ func (c *Client) UpdatePRComment(ctx context.Context, repo RepoRef, prID, commen
 type bitbucketPRComment struct {
 	ID      int  `json:"id"`
 	Deleted bool `json:"deleted"`
+	User    struct {
+		UUID string `json:"uuid"`
+	} `json:"user"`
 	Content *struct {
 		Raw *string `json:"raw"`
 	} `json:"content"`
@@ -113,5 +130,5 @@ func normalizeBitbucketPRComment(raw bitbucketPRComment, expectedID int) (PRComm
 	if expectedID > 0 && raw.ID != expectedID {
 		return PRComment{}, fmt.Errorf("Bitbucket PR comment identity mismatch: got %d, expected %d", raw.ID, expectedID)
 	}
-	return PRComment{ID: raw.ID, Body: *raw.Content.Raw, URL: raw.Links.HTML.Href}, nil
+	return PRComment{ID: raw.ID, Body: *raw.Content.Raw, URL: raw.Links.HTML.Href, Principal: raw.User.UUID}, nil
 }

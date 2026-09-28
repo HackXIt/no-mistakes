@@ -190,6 +190,20 @@ CREATE TABLE IF NOT EXISTS managed_pr_comments (
     PRIMARY KEY (repo_id, provider, pr_number)
 );
 
+CREATE TABLE IF NOT EXISTS pending_managed_pr_comments (
+    repo_id        TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    provider       TEXT NOT NULL,
+    pr_number      TEXT NOT NULL,
+    pr_url         TEXT NOT NULL,
+    head_sha       TEXT NOT NULL,
+    principal      TEXT NOT NULL,
+    marker_digest  TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    body           TEXT NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (repo_id, provider, pr_number)
+);
+
 CREATE TABLE IF NOT EXISTS intent_cache (
     cache_key   TEXT PRIMARY KEY,
     summary     TEXT NOT NULL,

@@ -14,6 +14,20 @@ import (
 const giteaCommentPageSize = 50
 const maxGiteaCommentPages = 100
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	out, err := h.cmd(ctx, "tea", "api", "--login", h.login, "/user").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("tea api authenticated user: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	if json.Unmarshal(bytesTrimToJSON(out), &user) != nil || user.ID <= 0 {
+		return "", fmt.Errorf("Gitea authenticated user response was incomplete")
+	}
+	return strconv.FormatInt(user.ID, 10), nil
+}
+
 func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment, error) {
 	owner, repo, number, err := h.prCommentIdentity(pr)
 	if err != nil {
@@ -91,6 +105,9 @@ type giteaIssueComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func normalizeGiteaComment(raw giteaIssueComment, owner, repo string, number int, expectedID int64) (scm.PRComment, error) {
@@ -104,7 +121,11 @@ func normalizeGiteaComment(raw giteaIssueComment, owner, repo string, number int
 	if !strings.HasSuffix(strings.TrimRight(raw.IssueURL, "/"), suffix) {
 		return scm.PRComment{}, fmt.Errorf("Gitea pull comment belongs to a different review object")
 	}
-	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL}, nil
+	principal := ""
+	if raw.User.ID > 0 {
+		principal = strconv.FormatInt(raw.User.ID, 10)
+	}
+	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL, Principal: principal}, nil
 }
 
 func (h *Host) prCommentIdentity(pr *scm.PR) (string, string, int, error) {

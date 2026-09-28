@@ -13,6 +13,22 @@ import (
 const forgejoCommentPageSize = 50
 const maxForgejoCommentPages = 100
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	var response struct {
+		Status int `json:"status"`
+		Data   *struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+	if err := h.runJSON(ctx, "api", []string{"GET", "user"}, &response); err != nil {
+		return "", err
+	}
+	if response.Status != 200 || response.Data == nil || response.Data.ID <= 0 {
+		return "", fmt.Errorf("forgejo-axi api: incomplete authenticated user response")
+	}
+	return strconv.FormatInt(response.Data.ID, 10), nil
+}
+
 // forgejo-axi's raw API contract is used here for ordinary issue comments:
 // `api METHOD PATH --data JSON --json` emits {status,data}. Pull requests share
 // the issue-comment endpoint in Forgejo. Pagination is explicit so an owned
@@ -104,6 +120,9 @@ type forgejoIssueComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func (h *Host) normalizeIssueComment(raw forgejoIssueComment, number string, expectedID int64) (scm.PRComment, error) {
@@ -117,7 +136,11 @@ func (h *Host) normalizeIssueComment(raw forgejoIssueComment, number string, exp
 	if !strings.HasSuffix(strings.TrimRight(raw.IssueURL, "/"), suffix) {
 		return scm.PRComment{}, fmt.Errorf("Forgejo pull comment belongs to a different review object")
 	}
-	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL}, nil
+	principal := ""
+	if raw.User.ID > 0 {
+		principal = strconv.FormatInt(raw.User.ID, 10)
+	}
+	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL, Principal: principal}, nil
 }
 
 var _ scm.ManagedPRCommentHost = (*Host)(nil)

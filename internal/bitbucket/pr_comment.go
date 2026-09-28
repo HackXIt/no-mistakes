@@ -9,6 +9,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	return h.client.AuthenticatedPrincipal(ctx)
+}
+
 func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment, error) {
 	id, err := h.prCommentIdentity(pr)
 	if err != nil {
@@ -20,7 +24,7 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 	}
 	comments := make([]scm.PRComment, 0, len(raw))
 	for _, comment := range raw {
-		comments = append(comments, scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL})
+		comments = append(comments, scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL, Principal: comment.Principal})
 	}
 	return comments, nil
 }
@@ -34,7 +38,7 @@ func (h *Host) CreatePRComment(ctx context.Context, pr *scm.PR, body string) (sc
 	if err != nil {
 		return scm.PRComment{}, err
 	}
-	return scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL}, nil
+	return scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL, Principal: comment.Principal}, nil
 }
 
 func (h *Host) UpdatePRComment(ctx context.Context, pr *scm.PR, commentID, body string) (scm.PRComment, error) {
@@ -50,7 +54,7 @@ func (h *Host) UpdatePRComment(ctx context.Context, pr *scm.PR, commentID, body 
 	if err != nil {
 		return scm.PRComment{}, err
 	}
-	return scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL}, nil
+	return scm.PRComment{ID: strconv.Itoa(comment.ID), Body: comment.Body, URL: comment.URL, Principal: comment.Principal}, nil
 }
 
 func (h *Host) prCommentIdentity(pr *scm.PR) (int, error) {

@@ -12,6 +12,20 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	out, err := h.cmd(ctx, "gh", h.apiArgs("--method", "GET", "user")...).Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api authenticated user: %w", err)
+	}
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	if json.Unmarshal(out, &user) != nil || user.ID <= 0 {
+		return "", fmt.Errorf("GitHub authenticated user response was incomplete")
+	}
+	return strconv.FormatInt(user.ID, 10), nil
+}
+
 // Ordinary PR comments are issue comments in GitHub's API. Keep this separate
 // from GetReviewComments, which reads review threads and deliberately filters
 // them to registered review bots.
@@ -98,6 +112,9 @@ type githubIssueComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func (h *Host) normalizeIssueComment(raw githubIssueComment, repo string, number int, expectedID int64) (scm.PRComment, error) {
@@ -111,7 +128,11 @@ func (h *Host) normalizeIssueComment(raw githubIssueComment, repo string, number
 	if !strings.HasSuffix(strings.TrimRight(raw.IssueURL, "/"), suffix) {
 		return scm.PRComment{}, fmt.Errorf("GitHub PR comment belongs to a different review object")
 	}
-	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL}, nil
+	principal := ""
+	if raw.User.ID > 0 {
+		principal = strconv.FormatInt(raw.User.ID, 10)
+	}
+	return scm.PRComment{ID: strconv.FormatInt(raw.ID, 10), Body: *raw.Body, URL: raw.HTMLURL, Principal: principal}, nil
 }
 
 func (h *Host) prCommentIdentity(pr *scm.PR) (string, int, error) {

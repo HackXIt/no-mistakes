@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,8 @@ import (
 type managedCommentTestHost struct {
 	scm.Host
 	comments        []scm.PRComment
+	principal       string
+	createErr       error
 	creates         int
 	updates         int
 	listCalls       int
@@ -25,6 +28,12 @@ type managedCommentTestHost struct {
 }
 
 func (h *managedCommentTestHost) Provider() scm.Provider { return scm.ProviderGitHub }
+func (h *managedCommentTestHost) AuthenticatedPRCommentPrincipal(context.Context) (string, error) {
+	if h.principal == "" {
+		return "bot-1", nil
+	}
+	return h.principal, nil
+}
 func (h *managedCommentTestHost) Capabilities() scm.Capabilities {
 	return scm.Capabilities{ManagedPRComments: true}
 }
@@ -43,7 +52,13 @@ func (h *managedCommentTestHost) ListPRComments(context.Context, *scm.PR) ([]scm
 }
 func (h *managedCommentTestHost) CreatePRComment(_ context.Context, _ *scm.PR, body string) (scm.PRComment, error) {
 	h.creates++
-	comment := scm.PRComment{ID: "7", Body: body}
+	if h.createErr != nil {
+		err := h.createErr
+		h.createErr = nil
+		return scm.PRComment{}, err
+	}
+	principal, _ := h.AuthenticatedPRCommentPrincipal(context.Background())
+	comment := scm.PRComment{ID: "7", Body: body, Principal: principal}
 	h.comments = append(h.comments, comment)
 	return comment, nil
 }
@@ -70,7 +85,7 @@ func managedCommentContext(t *testing.T, url string) *pipeline.StepContext {
 	}
 	return &pipeline.StepContext{
 		Ctx: context.Background(),
-		Run: &db.Run{ID: "run-1", RepoID: "repo-1", Branch: "feature", PRURL: &url},
+		Run: &db.Run{ID: "run-1", RepoID: "repo-1", Branch: "feature", HeadSHA: "head-1", PRURL: &url},
 		DB:  database,
 	}
 }
@@ -102,7 +117,7 @@ func TestPublishValidationCommentCreatesThenUpdatesInPlaceAndPreservesHumanComme
 	if err := publishValidationComment(sctx, host, pr, first); err != nil {
 		t.Fatal(err)
 	}
-	sctx.Run = &db.Run{ID: "run-2", RepoID: "repo-1", Branch: "feature", PRURL: &url}
+	sctx.Run = &db.Run{ID: "run-2", RepoID: "repo-1", Branch: "feature", HeadSHA: "head-1", PRURL: &url}
 	forged := wrapValidationComment("forged validation")
 	malformed := strings.Replace(forged, "forged", "edited", 1)
 	host.comments = append(host.comments,
@@ -133,6 +148,103 @@ func TestPublishValidationCommentSettlesDelayedCreateVisibilityWithoutDuplicatin
 	}
 	if host.listCalls < 3 {
 		t.Fatalf("list calls=%d, want a bounded settlement re-read", host.listCalls)
+	}
+}
+
+func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T) {
+	for _, mode := range []string{"before remote create", "after remote create", "create error"} {
+		t.Run(mode, func(t *testing.T) {
+			url := "https://github.com/test/repo/pull/42"
+			pr := &scm.PR{Number: "42", URL: url}
+			sctx := managedCommentContext(t, url)
+			host := &managedCommentTestHost{}
+			body := wrapValidationComment("validation")
+			expected, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode != "create error" {
+				if err := sctx.DB.BeginManagedPRCommentCreate(expected); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "after remote create" {
+				host.comments = append(host.comments, scm.PRComment{ID: "7", Body: body, Principal: "bot-1"})
+			}
+			if mode == "create error" {
+				host.createErr = errors.New("uncertain create")
+				if err := publishValidationComment(sctx, host, pr, body); err == nil {
+					t.Fatal("create error was accepted")
+				}
+				pending, err := sctx.DB.GetPendingManagedPRComment("repo-1", "github", "42")
+				if err != nil || pending == nil {
+					t.Fatalf("create error lost pending intent: %+v %v", pending, err)
+				}
+			}
+			if err := publishValidationComment(sctx, host, pr, body); err != nil {
+				t.Fatal(err)
+			}
+			wantCreates := 1
+			if mode == "after remote create" {
+				wantCreates = 0
+			} else if mode == "create error" {
+				wantCreates = 2
+			}
+			if host.creates != wantCreates || len(host.comments) != 1 {
+				t.Fatalf("mode=%s creates=%d comments=%+v", mode, host.creates, host.comments)
+			}
+			binding, err := sctx.DB.GetManagedPRCommentBinding("repo-1", "github", "42")
+			if err != nil || binding == nil || binding.CommentID != "7" {
+				t.Fatalf("mode=%s binding=%+v err=%v", mode, binding, err)
+			}
+		})
+	}
+}
+
+func TestPublishValidationCommentRecoveryRequiresOnePrincipalMatch(t *testing.T) {
+	url := "https://github.com/test/repo/pull/42"
+	pr := &scm.PR{Number: "42", URL: url}
+	body := wrapValidationComment("validation")
+	for _, comments := range [][]scm.PRComment{
+		{{ID: "wrong-author", Body: body, Principal: "human"}},
+		{{ID: "7", Body: body, Principal: "bot-1"}, {ID: "8", Body: body, Principal: "bot-1"}},
+	} {
+		sctx := managedCommentContext(t, url)
+		host := &managedCommentTestHost{comments: comments}
+		expected, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sctx.DB.BeginManagedPRCommentCreate(expected); err != nil {
+			t.Fatal(err)
+		}
+		err = publishValidationComment(sctx, host, pr, body)
+		if len(comments) == 1 {
+			if err != nil || host.creates != 1 {
+				t.Fatalf("wrong-principal comment blocked safe create: err=%v creates=%d", err, host.creates)
+			}
+		} else if err == nil || host.creates != 0 {
+			t.Fatalf("ambiguous principal matches were accepted: err=%v creates=%d", err, host.creates)
+		}
+	}
+}
+
+func TestPublishValidationCommentRefusesChangedAuthenticatedPrincipal(t *testing.T) {
+	url := "https://github.com/test/repo/pull/42"
+	pr := &scm.PR{Number: "42", URL: url}
+	body := wrapValidationComment("validation")
+	sctx := managedCommentContext(t, url)
+	host := &managedCommentTestHost{}
+	expected, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.BeginManagedPRCommentCreate(expected); err != nil {
+		t.Fatal(err)
+	}
+	host.principal = "bot-2"
+	if err := publishValidationComment(sctx, host, pr, body); err == nil || host.creates != 0 {
+		t.Fatalf("changed authenticated principal was accepted: err=%v creates=%d", err, host.creates)
 	}
 }
 
@@ -427,15 +539,31 @@ func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	}
 }
 
+func TestLegacyMinimalDescriptionMigrationPreservesNarrativeAndRisk(t *testing.T) {
+	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
+	legacy := "Concise narrative.\n\n⚠️ Medium: publication changed\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker
+	parts, err := parseOrMigratePROwnedBody(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(parts.before) != "Concise narrative.\n\n⚠️ Medium: publication changed" {
+		t.Fatalf("minimal migration changed visible content: %q", parts.before)
+	}
+}
+
 func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t *testing.T) {
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
 	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nRecorded history.\n\n</details>"
 	quoted := "> " + strings.ReplaceAll(footer, "\n", "\n> ")
+	minimal := noMistakesPRSignature + "\n\n" + legacyMarker
 	cases := map[string]string{
-		"code fence":         "Author archive:\n\n```markdown\n" + footer + "\n```",
-		"blockquote":         "Author archive:\n\n" + quoted,
-		"prose":              "Author archive:\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker,
-		"nontrailing footer": footer + "\n\n## Human notes\n\nKeep this marker as quoted history.",
+		"code fence":                "Author archive:\n\n```markdown\n" + footer + "\n```",
+		"blockquote":                "Author archive:\n\n" + quoted,
+		"prose":                     "Author archive quotes " + noMistakesPRSignature + " beside " + legacyMarker,
+		"nontrailing footer":        footer + "\n\n## Human notes\n\nKeep this marker as quoted history.",
+		"fenced minimal":            "```text\n" + minimal + "\n```",
+		"embedded minimal":          "Author archive:\n\n" + minimal + "\n\nHuman suffix.",
+		"duplicated minimal marker": minimal + "\n\n" + minimal,
 	}
 	_, appendix := ownedFixture(t)
 	for name, body := range cases {

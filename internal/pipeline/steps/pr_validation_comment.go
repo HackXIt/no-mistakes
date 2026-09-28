@@ -312,6 +312,52 @@ func managedValidationCommentBinding(sctx *pipeline.StepContext, host scm.Host, 
 	return binding, number, nil
 }
 
+func pendingValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, prNumber, principal, body string) (db.PendingManagedPRComment, error) {
+	principal = strings.TrimSpace(principal)
+	if principal == "" {
+		return db.PendingManagedPRComment{}, fmt.Errorf("provider returned no authenticated comment principal")
+	}
+	if len(body) < len(validationCommentStart)+64 {
+		return db.PendingManagedPRComment{}, fmt.Errorf("validation comment ownership marker is malformed")
+	}
+	markerDigest := body[len(validationCommentStart) : len(validationCommentStart)+64]
+	if _, ok, err := parseValidationComment(scm.PRComment{ID: "pending", Body: body}); err != nil {
+		return db.PendingManagedPRComment{}, fmt.Errorf("validation comment create payload is not owned: %w", err)
+	} else if !ok {
+		return db.PendingManagedPRComment{}, fmt.Errorf("validation comment create payload has no ownership markers")
+	}
+	return db.PendingManagedPRComment{
+		RepoID: sctx.Run.RepoID, Provider: string(host.Provider()), PRNumber: prNumber,
+		PRURL: pr.URL, HeadSHA: strings.TrimSpace(sctx.Run.HeadSHA), Principal: principal,
+		MarkerDigest: markerDigest, PayloadDigest: fmt.Sprintf("%x", sha256.Sum256([]byte(body))), Body: body,
+	}, nil
+}
+
+func recoverPendingValidationComment(comments []scm.PRComment, pending db.PendingManagedPRComment) (*ownedValidationComment, error) {
+	var found *ownedValidationComment
+	for _, comment := range comments {
+		if comment.Body != pending.Body || comment.Principal != pending.Principal {
+			continue
+		}
+		if strings.TrimSpace(comment.ID) == "" {
+			return nil, fmt.Errorf("pending validation comment match has no provider identity")
+		}
+		owned, ok, err := parseValidationComment(comment)
+		if err != nil {
+			return nil, fmt.Errorf("pending validation comment match is malformed: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("pending validation comment match has no ownership markers")
+		}
+		if found != nil {
+			return nil, fmt.Errorf("multiple authenticated comments match the pending create intent")
+		}
+		copy := owned
+		found = &copy
+	}
+	return found, nil
+}
+
 // publishValidationComment is idempotent and fail-closed. A successful create
 // persists its exact provider ID before settlement; a create error cannot prove
 // ownership and is not replayed. An update error is reconciled only against the
@@ -344,29 +390,53 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		return fmt.Errorf("list validation comments: %w", err)
 	}
 	if binding == nil {
-		if err := refuseUnboundValidationMarkers(comments); err != nil {
-			return err
-		}
-		created, err := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+		principal, err := commentsHost.AuthenticatedPRCommentPrincipal(sctx.Ctx)
 		if err != nil {
-			return fmt.Errorf("create validation comment: %w", err)
+			return fmt.Errorf("resolve authenticated comment principal: %w", err)
 		}
-		if strings.TrimSpace(created.ID) == "" || created.Body != body {
-			return fmt.Errorf("create validation comment returned an incomplete settled identity")
-		}
-		if _, ok, err := parseValidationComment(created); err != nil {
-			return fmt.Errorf("create validation comment returned invalid ownership: %w", err)
-		} else if !ok {
-			return fmt.Errorf("create validation comment returned no ownership markers")
-		}
-		binding = &db.ManagedPRCommentBinding{
-			RepoID: sctx.Run.RepoID, Provider: string(host.Provider()), PRNumber: prNumber,
-			PRURL: pr.URL, CommentID: created.ID,
-		}
-		if err := sctx.DB.BindManagedPRComment(*binding); err != nil {
+		expected, err := pendingValidationComment(sctx, host, pr, prNumber, principal, body)
+		if err != nil {
 			return err
 		}
-		if err := verifyValidationComment(sctx, commentsHost, pr, binding.CommentID, body); err != nil {
+		pending, err := sctx.DB.GetPendingManagedPRComment(expected.RepoID, expected.Provider, expected.PRNumber)
+		if err != nil {
+			return err
+		}
+		if pending == nil {
+			if err := refuseUnboundValidationMarkers(comments); err != nil {
+				return err
+			}
+			if err := sctx.DB.BeginManagedPRCommentCreate(expected); err != nil {
+				return err
+			}
+			pending = &expected
+		} else if pending.PRURL != expected.PRURL || pending.HeadSHA != expected.HeadSHA || pending.Principal != expected.Principal || pending.MarkerDigest != expected.MarkerDigest || pending.PayloadDigest != expected.PayloadDigest || pending.Body != expected.Body {
+			return fmt.Errorf("pending validation comment create intent does not match this publication")
+		}
+
+		recovered, err := recoverPendingValidationComment(comments, *pending)
+		if err != nil {
+			return err
+		}
+		if recovered == nil {
+			created, err := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+			if err != nil {
+				return fmt.Errorf("create validation comment: %w", err)
+			}
+			if strings.TrimSpace(created.ID) == "" || created.Body != body || created.Principal != pending.Principal {
+				return fmt.Errorf("create validation comment returned an incomplete settled identity")
+			}
+			if _, ok, err := parseValidationComment(created); err != nil {
+				return fmt.Errorf("create validation comment returned invalid ownership: %w", err)
+			} else if !ok {
+				return fmt.Errorf("create validation comment returned no ownership markers")
+			}
+			recovered = &ownedValidationComment{comment: created}
+		}
+		if err := sctx.DB.CompleteManagedPRCommentCreate(*pending, recovered.comment.ID); err != nil {
+			return err
+		}
+		if err := verifyValidationComment(sctx, commentsHost, pr, recovered.comment.ID, body); err != nil {
 			return fmt.Errorf("verify created validation comment: %w", err)
 		}
 		return nil

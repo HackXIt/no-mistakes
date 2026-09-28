@@ -2,27 +2,38 @@ package db
 
 import "testing"
 
-func TestManagedPRCommentBindingIsDurableAndImmutable(t *testing.T) {
+func TestManagedPRCommentPendingCreateCompletesAtomically(t *testing.T) {
 	database := openTestDB(t)
 	if _, err := database.InsertRepoWithID("repo-1", t.TempDir(), "https://github.com/test/repo", "main"); err != nil {
 		t.Fatal(err)
 	}
-	binding := ManagedPRCommentBinding{
-		RepoID: "repo-1", Provider: "github", PRNumber: "42",
-		PRURL: "https://github.com/test/repo/pull/42", CommentID: "7",
+	pending := PendingManagedPRComment{
+		RepoID: "repo-1", Provider: "github", PRNumber: "42", PRURL: "https://github.com/test/repo/pull/42",
+		HeadSHA: "head", Principal: "bot-1", MarkerDigest: "marker", PayloadDigest: "payload", Body: "body",
 	}
-	if err := database.BindManagedPRComment(binding); err != nil {
+	if err := database.BeginManagedPRCommentCreate(pending); err != nil {
 		t.Fatal(err)
 	}
-	got, err := database.GetManagedPRCommentBinding("repo-1", "github", "42")
-	if err != nil || got == nil || got.CommentID != "7" || got.PRURL != binding.PRURL {
-		t.Fatalf("binding=%+v err=%v", got, err)
+	got, err := database.GetPendingManagedPRComment("repo-1", "github", "42")
+	if err != nil || got == nil || got.Principal != "bot-1" || got.Body != "body" {
+		t.Fatalf("pending=%+v err=%v", got, err)
 	}
-	if err := database.BindManagedPRComment(binding); err != nil {
-		t.Fatalf("idempotent binding failed: %v", err)
+	conflict := pending
+	conflict.HeadSHA = "other"
+	if err := database.BeginManagedPRCommentCreate(conflict); err == nil {
+		t.Fatal("conflicting pending create intent was accepted")
 	}
-	binding.CommentID = "8"
-	if err := database.BindManagedPRComment(binding); err == nil {
-		t.Fatal("managed comment identity was replaced")
+	if err := database.CompleteManagedPRCommentCreate(pending, "7"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := database.GetPendingManagedPRComment("repo-1", "github", "42"); err != nil || got != nil {
+		t.Fatalf("completed pending intent survived: %+v %v", got, err)
+	}
+	binding, err := database.GetManagedPRCommentBinding("repo-1", "github", "42")
+	if err != nil || binding == nil || binding.CommentID != "7" {
+		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	if err := database.BeginManagedPRCommentCreate(pending); err == nil {
+		t.Fatal("new pending intent was accepted after identity binding")
 	}
 }

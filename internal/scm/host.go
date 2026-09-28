@@ -358,18 +358,22 @@ type PRContentReader interface {
 // comment. Body must be raw Markdown, never rendered HTML. ID is the durable
 // provider identity used for an in-place update.
 type PRComment struct {
-	ID   string
-	Body string
-	URL  string
+	ID        string
+	Body      string
+	URL       string
+	Principal string
 }
 
 // ManagedPRCommentHost is the raw transport required to maintain one
-// pipeline-owned validation comment. ListPRComments must return a complete
+// pipeline-owned validation comment. AuthenticatedPRCommentPrincipal must
+// return the stable provider identity stamped on comments created by this
+// credential. ListPRComments must return a complete
 // list or fail; a partial page is never absence. CreatePRComment and
 // UpdatePRComment must return the settled raw comment and verify that it still
 // belongs to pr. Durable provider-ID binding and read-after-write settlement
 // live in the pipeline so every provider follows one policy.
 type ManagedPRCommentHost interface {
+	AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error)
 	ListPRComments(ctx context.Context, pr *PR) ([]PRComment, error)
 	CreatePRComment(ctx context.Context, pr *PR, body string) (PRComment, error)
 	UpdatePRComment(ctx context.Context, pr *PR, commentID, body string) (PRComment, error)

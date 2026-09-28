@@ -210,28 +210,40 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 	if strings.Count(body, pipelineAttestationCommentPrefix) != 1 || strings.Count(body, noMistakesPRSignature) != 1 {
 		return prOwnedBody{}, fmt.Errorf("ambiguous unowned PR attestation; refusing migration")
 	}
-	footerPrefix := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n"
-	footerStart := strings.LastIndex(body, "\n"+footerPrefix)
+	pipelinePrefix := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n"
+	minimalPrefix := noMistakesPRSignature + "\n\n"
+	footerPrefix := pipelinePrefix
+	footerStart := strings.LastIndex(body, "\n"+pipelinePrefix)
+	minimal := false
 	if footerStart >= 0 {
 		footerStart++
-	} else if strings.HasPrefix(body, footerPrefix) {
+	} else if strings.HasPrefix(body, pipelinePrefix) {
 		footerStart = 0
 	} else {
-		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+		footerPrefix = minimalPrefix
+		footerStart = strings.LastIndex(body, "\n\n"+minimalPrefix)
+		if footerStart >= 0 {
+			footerStart += 2
+		} else if strings.HasPrefix(body, minimalPrefix) {
+			footerStart = 0
+		} else {
+			return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in a canonical legacy footer")
+		}
+		minimal = true
 	}
 	if strings.Count(body, footerPrefix) != 1 || markdownFenceOpen(body[:footerStart]) {
-		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in a canonical legacy footer")
 	}
 	markerStart := footerStart + len(footerPrefix)
 	if !strings.HasPrefix(body[markerStart:], pipelineAttestationCommentPrefix) {
-		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the canonical legacy footer")
+		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in a canonical legacy footer")
 	}
 	marker := extractPipelineAttestationMarker(body[markerStart:])
 	if marker == "" {
 		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
 	}
 	markerEnd := markerStart + len(marker)
-	if strings.Contains(body[markerEnd:], "\n## ") {
+	if (minimal && markerEnd != len(body)) || strings.Contains(body[markerEnd:], "\n## ") {
 		return prOwnedBody{}, fmt.Errorf("unowned PR attestation is not in the trailing legacy footer")
 	}
 	var attestation pipelineAttestation
@@ -239,7 +251,10 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 	if json.Unmarshal([]byte(payload), &attestation) != nil || strings.TrimSpace(attestation.HeadSHA) == "" {
 		return prOwnedBody{}, fmt.Errorf("malformed unowned PR attestation; refusing migration")
 	}
-	migrated := body[:footerStart] + "## Pipeline\n\n" + body[markerEnd:]
+	migrated := body[:footerStart]
+	if !minimal {
+		migrated += "## Pipeline\n\n" + body[markerEnd:]
+	}
 	return prOwnedBody{before: migrated}, nil
 }
 

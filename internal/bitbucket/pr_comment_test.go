@@ -16,16 +16,18 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	body := "validation body"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/2.0/user":
+			fmt.Fprint(w, `{"uuid":"{principal-101}"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/owner/repo/pullrequests/7/comments":
-			fmt.Fprint(w, `{"values":[{"id":10,"deleted":true},{"id":11,"content":{"raw":"old"}}]}`)
+			fmt.Fprint(w, `{"values":[{"id":10,"deleted":true},{"id":11,"content":{"raw":"old"},"user":{"uuid":"{principal-101}"}}]}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/owner/repo/pullrequests/7/comments":
 			var payload map[string]map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "content": map[string]any{"raw": payload["content"]["raw"]}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "content": map[string]any{"raw": payload["content"]["raw"]}, "user": map[string]string{"uuid": "{principal-101}"}})
 		case r.Method == http.MethodPut && r.URL.Path == "/2.0/repositories/owner/repo/pullrequests/7/comments/11":
 			var payload map[string]map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 11, "content": map[string]any{"raw": payload["content"]["raw"]}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 11, "content": map[string]any{"raw": payload["content"]["raw"]}, "user": map[string]string{"uuid": "{principal-101}"}})
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -37,8 +39,12 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	}
 	host := NewHost(client, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
 	pr := &scm.PR{Number: "7", URL: "https://bitbucket.org/owner/repo/pull-requests/7"}
+	principal, err := host.AuthenticatedPRCommentPrincipal(context.Background())
+	if err != nil || principal != "{principal-101}" {
+		t.Fatalf("AuthenticatedPRCommentPrincipal() = %q, %v", principal, err)
+	}
 	comments, err := host.ListPRComments(context.Background(), pr)
-	if err != nil || len(comments) != 1 || comments[0].ID != "11" {
+	if err != nil || len(comments) != 1 || comments[0].ID != "11" || comments[0].Principal != "{principal-101}" {
 		t.Fatalf("ListPRComments() = %+v, %v", comments, err)
 	}
 	created, err := host.CreatePRComment(context.Background(), pr, body)

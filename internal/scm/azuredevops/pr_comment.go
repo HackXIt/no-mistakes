@@ -11,6 +11,25 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
+func (h *Host) AuthenticatedPRCommentPrincipal(ctx context.Context) (string, error) {
+	args := []string{"devops", "invoke", "--area", "location", "--resource", "connectionData", "--api-version", "7.1"}
+	args = append(args, h.orgArgs()...)
+	args = append(args, "--output", "json")
+	out, err := outputJSON(h.cmd(ctx, "az", args...))
+	if err != nil {
+		return "", fmt.Errorf("az devops invoke authenticated user: %w", err)
+	}
+	var response struct {
+		AuthenticatedUser struct {
+			ID string `json:"id"`
+		} `json:"authenticatedUser"`
+	}
+	if json.Unmarshal(out, &response) != nil || strings.TrimSpace(response.AuthenticatedUser.ID) == "" {
+		return "", fmt.Errorf("Azure DevOps authenticated user response was incomplete")
+	}
+	return strings.TrimSpace(response.AuthenticatedUser.ID), nil
+}
+
 // Azure DevOps models PR comments as comments inside threads. The managed
 // validation comment is always a root comment; its durable identity is encoded
 // as "threadID:commentID" so updates cannot bind to a sibling thread.
@@ -139,6 +158,9 @@ type azureComment struct {
 	Content         *string `json:"content"`
 	CommentType     int     `json:"commentType"`
 	IsDeleted       bool    `json:"isDeleted"`
+	Author          struct {
+		ID string `json:"id"`
+	} `json:"author"`
 }
 
 func normalizeAzureComment(threadID int, raw azureComment, expectedThread, expectedComment int) (scm.PRComment, error) {
@@ -148,7 +170,7 @@ func normalizeAzureComment(threadID int, raw azureComment, expectedThread, expec
 	if expectedThread > 0 && (threadID != expectedThread || raw.ID != expectedComment) {
 		return scm.PRComment{}, fmt.Errorf("Azure DevOps PR comment identity mismatch")
 	}
-	return scm.PRComment{ID: fmt.Sprintf("%d:%d", threadID, raw.ID), Body: *raw.Content}, nil
+	return scm.PRComment{ID: fmt.Sprintf("%d:%d", threadID, raw.ID), Body: *raw.Content, Principal: strings.TrimSpace(raw.Author.ID)}, nil
 }
 
 func parseAzureCommentID(raw string) (int, int, error) {

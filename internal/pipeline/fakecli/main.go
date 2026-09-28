@@ -433,6 +433,10 @@ func fakeGlabHandler(args []string) {
 		fmt.Println("https://gitlab.com/test/repo/-/merge_requests/99")
 		os.Exit(0)
 	}
+	if len(args) > 0 && args[0] == "api" && strings.HasSuffix(strings.Join(args, " "), " user") {
+		fmt.Println(`{"id":101}`)
+		os.Exit(0)
+	}
 	if len(args) > 0 && args[0] == "api" && strings.Contains(strings.Join(args, " "), "/merge_requests/") && strings.Contains(strings.Join(args, " "), "/notes") {
 		fakeGlabHandleManagedComments(args)
 	}
@@ -445,6 +449,9 @@ type fakeGitLabNote struct {
 	NoteableIID int     `json:"noteable_iid"`
 	System      bool    `json:"system"`
 	WebURL      string  `json:"web_url"`
+	Author      struct {
+		ID int64 `json:"id"`
+	} `json:"author"`
 }
 
 func fakeGlabHandleManagedComments(args []string) {
@@ -497,6 +504,7 @@ func fakeGlabHandleManagedComments(args []string) {
 	if method == "POST" {
 		body := input.Body
 		note := fakeGitLabNote{ID: 777, Body: &body, NoteableIID: iid, WebURL: fmt.Sprintf("https://gitlab.com/test/repo/-/merge_requests/%d#note_777", iid)}
+		note.Author.ID = 101
 		notes = append(notes, note)
 		writeFakeGitLabNotes(path, notes)
 		data, _ := json.Marshal(note)
@@ -637,6 +645,10 @@ func fakeGHHandlePRContentCommands(args []string, joined string) {
 		fakeGHStorePRBody(args)
 		os.Exit(0)
 	}
+	if len(args) > 0 && args[0] == "api" && strings.HasSuffix(joined, " user") {
+		fmt.Println(`{"id":101}`)
+		os.Exit(0)
+	}
 	if len(args) > 0 && args[0] == "api" && strings.Contains(joined, "/issues/") && strings.Contains(joined, "comments") {
 		fakeGHHandleManagedComments(args)
 	}
@@ -673,6 +685,9 @@ type fakeGHIssueComment struct {
 	Body     *string `json:"body"`
 	HTMLURL  string  `json:"html_url"`
 	IssueURL string  `json:"issue_url"`
+	User     struct {
+		ID int64 `json:"id"`
+	} `json:"user"`
 }
 
 func fakeGHHandleManagedComments(args []string) {
@@ -727,6 +742,7 @@ func fakeGHHandleManagedComments(args []string) {
 		}
 		body := input.Body
 		comment := fakeGHIssueComment{ID: 777, Body: &body, HTMLURL: "https://github.com/" + repo + "/pull/" + number + "#issuecomment-777", IssueURL: "https://api.github.com/repos/" + repo + "/issues/" + number}
+		comment.User.ID = 101
 		comments = append(comments, comment)
 		writeFakeComments(path, comments)
 		data, _ := json.Marshal(comment)

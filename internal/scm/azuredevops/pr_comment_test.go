@@ -29,12 +29,14 @@ func TestManagedPRCommentTransport(t *testing.T) {
 		}
 		response := ""
 		switch {
+		case strings.Contains(joined, "--resource connectionData"):
+			response = `{"authenticatedUser":{"id":"principal-101"}}`
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method GET"):
-			response = `{"count":1,"value":[{"id":21,"comments":[{"id":9,"parentCommentId":0,"content":"provider event","commentType":2,"isDeleted":false},{"id":1,"parentCommentId":0,"content":"old","commentType":1,"isDeleted":false}]}]}`
+			response = `{"count":1,"value":[{"id":21,"comments":[{"id":9,"parentCommentId":0,"content":"provider event","commentType":2,"isDeleted":false},{"id":1,"parentCommentId":0,"content":"old","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}]}]}`
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method POST"):
-			response = `{"id":22,"comments":[{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false}]}`
+			response = `{"id":22,"comments":[{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}]}`
 		case strings.Contains(joined, "--resource pullRequestThreadComments") && strings.Contains(joined, "--http-method PATCH"):
-			response = `{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false}`
+			response = `{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false,"author":{"id":"principal-101"}}`
 		default:
 			response = `{}`
 		}
@@ -44,8 +46,12 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	}
 	host := New(factory, func() bool { return true }, testOrg, testProject, testRepo)
 	pr := &scm.PR{Number: "7"}
+	principal, err := host.AuthenticatedPRCommentPrincipal(context.Background())
+	if err != nil || principal != "principal-101" {
+		t.Fatalf("AuthenticatedPRCommentPrincipal() = %q, %v", principal, err)
+	}
 	comments, err := host.ListPRComments(context.Background(), pr)
-	if err != nil || len(comments) != 1 || comments[0].ID != "21:1" {
+	if err != nil || len(comments) != 1 || comments[0].ID != "21:1" || comments[0].Principal != "principal-101" {
 		t.Fatalf("ListPRComments() = %+v, %v", comments, err)
 	}
 	created, err := host.CreatePRComment(context.Background(), pr, "validation body")
@@ -56,7 +62,7 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	if err != nil || updated.ID != "21:1" {
 		t.Fatalf("UpdatePRComment() = %+v, %v", updated, err)
 	}
-	if len(calls) != 3 || !strings.Contains(calls[0], "pullRequestId=7") || !strings.Contains(calls[2], "threadId=21 commentId=1") {
+	if len(calls) != 4 || !strings.Contains(calls[1], "pullRequestId=7") || !strings.Contains(calls[3], "threadId=21 commentId=1") {
 		t.Fatalf("comment routes = %#v", calls)
 	}
 	if len(payloads) != 2 || !strings.Contains(payloads[0], `"validation body"`) || !strings.Contains(payloads[1], `"validation body"`) {
