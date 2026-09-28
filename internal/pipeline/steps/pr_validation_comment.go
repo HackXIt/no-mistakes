@@ -442,16 +442,16 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		if err != nil {
 			return fmt.Errorf("resolve authenticated comment principal: %w", err)
 		}
+		expected, err := pendingValidationComment(sctx, host, pr, prNumber, principal, body)
+		if err != nil {
+			return err
+		}
 		pending, err := sctx.DB.GetPendingManagedPRComment(sctx.Run.RepoID, string(host.Provider()), prNumber)
 		if err != nil {
 			return err
 		}
 		resumingPending := pending != nil
 		if pending == nil {
-			expected, err := pendingValidationComment(sctx, host, pr, prNumber, principal, body)
-			if err != nil {
-				return err
-			}
 			if err := refuseUnboundValidationMarkers(comments); err != nil {
 				return err
 			}
@@ -471,6 +471,12 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 			recovered, err = recheckPendingValidationComment(sctx, commentsHost, pr, *pending)
 			if err != nil {
 				return err
+			}
+			if recovered == nil && (pending.HeadSHA != expected.HeadSHA || pending.MarkerDigest != expected.MarkerDigest || pending.PayloadDigest != expected.PayloadDigest || pending.Body != expected.Body) {
+				if err := sctx.DB.ReplacePendingManagedPRComment(*pending, expected); err != nil {
+					return err
+				}
+				pending = &expected
 			}
 		}
 		if recovered == nil {

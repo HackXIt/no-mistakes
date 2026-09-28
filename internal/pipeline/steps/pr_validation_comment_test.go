@@ -23,6 +23,7 @@ type managedCommentTestHost struct {
 	createErr       error
 	createBeforeErr bool
 	creates         int
+	createdBodies   []string
 	updates         int
 	listCalls       int
 	hiddenListCalls map[int]bool
@@ -53,6 +54,7 @@ func (h *managedCommentTestHost) ListPRComments(context.Context, *scm.PR) ([]scm
 }
 func (h *managedCommentTestHost) CreatePRComment(_ context.Context, _ *scm.PR, body string) (scm.PRComment, error) {
 	h.creates++
+	h.createdBodies = append(h.createdBodies, body)
 	principal, _ := h.AuthenticatedPRCommentPrincipal(context.Background())
 	comment := scm.PRComment{ID: "7", Body: body, Principal: principal}
 	if h.createErr != nil {
@@ -200,14 +202,60 @@ func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T
 	}
 }
 
-func TestPublishValidationCommentSettlesOldPendingBodyBeforeCurrentUpdate(t *testing.T) {
-	for _, remoteCreated := range []bool{false, true} {
-		t.Run(map[bool]string{false: "before create", true: "after create"}[remoteCreated], func(t *testing.T) {
+func TestPublishValidationCommentSettlesMatchedOldPendingBodyBeforeCurrentUpdate(t *testing.T) {
+	url := "https://github.com/test/repo/pull/42"
+	pr := &scm.PR{Number: "42", URL: url}
+	sctx := managedCommentContext(t, url)
+	host := &managedCommentTestHost{}
+	oldBody := wrapValidationComment("old validation")
+	pending, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", oldBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sctx.DB.BeginManagedPRCommentCreate(pending); err != nil {
+		t.Fatal(err)
+	}
+	host.comments = []scm.PRComment{{ID: "7", Body: oldBody, Principal: "bot-1"}}
+	host.hiddenListCalls = map[int]bool{1: true}
+	sctx.Run.HeadSHA = "head-2"
+	newBody := wrapValidationComment("new validation")
+	if err := publishValidationComment(sctx, host, pr, newBody); err != nil {
+		t.Fatal(err)
+	}
+	if host.creates != 0 || host.updates != 1 || len(host.comments) != 1 || host.comments[0].Body != newBody {
+		t.Fatalf("creates=%d updates=%d comments=%+v", host.creates, host.updates, host.comments)
+	}
+}
+
+func TestPublishValidationCommentRetriesOnlyCurrentTightenedPolicyBody(t *testing.T) {
+	const intentSecret = "private acquisition intent"
+	const evidenceSecret = "private full evidence"
+	for _, tc := range []struct {
+		name     string
+		withheld string
+		tighten  func(*pipeline.StepContext)
+	}{
+		{name: "no publish intent", withheld: intentSecret, tighten: func(sctx *pipeline.StepContext) { sctx.Run.OmitIntent = true }},
+		{name: "minimal appendix", withheld: evidenceSecret, tighten: func(sctx *pipeline.StepContext) { sctx.Config.PR.Appendix = config.PRAppendixMinimal }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, base, head := setupGitRepo(t)
+			sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, base, head, config.Commands{})
 			url := "https://github.com/test/repo/pull/42"
-			pr := &scm.PR{Number: "42", URL: url}
-			sctx := managedCommentContext(t, url)
+			sctx.Run.PRURL = &url
+			sctx.UserIntent = intentSecret
+			insertCompletedStep(t, sctx, "review", `{"findings":[],"summary":"clean","risk_level":"medium","risk_rationale":"policy changed"}`, "")
+			insertCompletedStep(t, sctx, "test", `{"findings":[],"summary":"clean","testing_summary":"`+evidenceSecret+`","tested":["focused"]}`, "")
+			step := &PRStep{}
+			oldBody, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(oldBody, tc.withheld) {
+				t.Fatalf("old publication did not contain withheld fixture %q:\n%s", tc.withheld, oldBody)
+			}
 			host := &managedCommentTestHost{}
-			oldBody := wrapValidationComment("old validation")
+			pr := &scm.PR{Number: "42", URL: url}
 			pending, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", oldBody)
 			if err != nil {
 				t.Fatal(err)
@@ -215,21 +263,19 @@ func TestPublishValidationCommentSettlesOldPendingBodyBeforeCurrentUpdate(t *tes
 			if err := sctx.DB.BeginManagedPRCommentCreate(pending); err != nil {
 				t.Fatal(err)
 			}
-			if remoteCreated {
-				host.comments = []scm.PRComment{{ID: "7", Body: oldBody, Principal: "bot-1"}}
-				host.hiddenListCalls = map[int]bool{1: true}
-			}
-			sctx.Run.HeadSHA = "head-2"
-			newBody := wrapValidationComment("new validation")
-			if err := publishValidationComment(sctx, host, pr, newBody); err != nil {
+			tc.tighten(sctx)
+			currentBody, err := step.renderValidationComment(sctx, scm.ProviderGitHub)
+			if err != nil {
 				t.Fatal(err)
 			}
-			wantCreates := 1
-			if remoteCreated {
-				wantCreates = 0
+			if strings.Contains(currentBody, tc.withheld) {
+				t.Fatalf("tightened publication retained %q:\n%s", tc.withheld, currentBody)
 			}
-			if host.creates != wantCreates || host.updates != 1 || len(host.comments) != 1 || host.comments[0].Body != newBody {
-				t.Fatalf("remoteCreated=%v creates=%d updates=%d comments=%+v", remoteCreated, host.creates, host.updates, host.comments)
+			if err := publishValidationComment(sctx, host, pr, currentBody); err != nil {
+				t.Fatal(err)
+			}
+			if host.creates != 1 || host.updates != 0 || len(host.createdBodies) != 1 || host.createdBodies[0] != currentBody || strings.Contains(host.createdBodies[0], tc.withheld) {
+				t.Fatalf("created stale policy body: creates=%d updates=%d bodies=%q", host.creates, host.updates, host.createdBodies)
 			}
 		})
 	}

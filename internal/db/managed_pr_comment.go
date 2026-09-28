@@ -106,6 +106,35 @@ func (d *DB) BeginManagedPRCommentCreate(pending PendingManagedPRComment) error 
 	return nil
 }
 
+func (d *DB) ReplacePendingManagedPRComment(existing, replacement PendingManagedPRComment) error {
+	if err := validatePendingManagedPRComment(existing); err != nil {
+		return err
+	}
+	if err := validatePendingManagedPRComment(replacement); err != nil {
+		return err
+	}
+	if existing.RepoID != replacement.RepoID || existing.Provider != replacement.Provider || existing.PRNumber != replacement.PRNumber || existing.PRURL != replacement.PRURL || existing.Principal != replacement.Principal {
+		return fmt.Errorf("replace pending managed PR comment: ownership identity changed")
+	}
+	result, err := d.sql.Exec(
+		`UPDATE pending_managed_pr_comments
+		    SET head_sha = ?, marker_digest = ?, payload_digest = ?, body = ?, created_at = ?
+		  WHERE repo_id = ? AND provider = ? AND pr_number = ? AND pr_url = ?
+		    AND head_sha = ? AND principal = ? AND marker_digest = ? AND payload_digest = ? AND body = ?`,
+		replacement.HeadSHA, replacement.MarkerDigest, replacement.PayloadDigest, replacement.Body, now(),
+		existing.RepoID, existing.Provider, existing.PRNumber, existing.PRURL, existing.HeadSHA,
+		existing.Principal, existing.MarkerDigest, existing.PayloadDigest, existing.Body,
+	)
+	if err != nil {
+		return fmt.Errorf("replace pending managed PR comment: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return fmt.Errorf("replace pending managed PR comment: pending intent changed")
+	}
+	return nil
+}
+
 func validatePendingManagedPRComment(p PendingManagedPRComment) error {
 	if strings.TrimSpace(p.RepoID) == "" || strings.TrimSpace(p.Provider) == "" || strings.TrimSpace(p.PRNumber) == "" || strings.TrimSpace(p.PRURL) == "" || strings.TrimSpace(p.HeadSHA) == "" || strings.TrimSpace(p.Principal) == "" || strings.TrimSpace(p.MarkerDigest) == "" || strings.TrimSpace(p.PayloadDigest) == "" || p.Body == "" {
 		return fmt.Errorf("managed PR comment create intent is incomplete")
