@@ -76,22 +76,12 @@ func writeFinalPRScopeScenario(t *testing.T) string {
 	return path
 }
 
-// TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped verifies the
-// final-diff scoping boundary at the closest supported user-visible boundary:
-// a real gate push executes the full pipeline and a GitHub PR creation
-// receives the final body on stdin.
-//
-// PR #605 originally made the whole PR body (including the deterministic
-// Risk Assessment, Testing, and Pipeline sections) final-diff scoped, but
-// that silently dropped those three sections everywhere (no-mistakes #605
-// regression, firstmate PR #1577/#1609). The corrected, intentional scope is
-// narrower: only the agent-authored `## What Changed` narrative is bound to
-// the actual final branch delta. The deterministic Risk Assessment, Testing,
-// and Pipeline sections legitimately describe the commit each step itself
-// inspected - that is what "evidence" means - and are restored in their full
-// pre-#605 form under their own clearly labeled headings, so a reviewer is
-// never told the Test step's own target commit is the shipped branch.
-func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T) {
+// TestPRDescriptionIsConciseWhileEvidenceStaysStepScoped drives the real
+// pipeline through GitHub publication and verifies the two public surfaces:
+// the description is squash-commit-style narrative plus the compact
+// enforcement trailer, while the single managed comment keeps the detailed
+// step-scoped risk, testing, and pipeline evidence.
+func TestPRDescriptionIsConciseWhileEvidenceStaysStepScoped(t *testing.T) {
 	h := NewHarness(t, SetupOpts{Agent: "claude", Scenario: writeFinalPRScopeScenario(t)})
 	ctx := context.Background()
 
@@ -129,7 +119,7 @@ func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T
 
 	run := h.WaitForRun(branch, 90*time.Second)
 	if run.Status != types.RunCompleted {
-		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, run.Error)
+		t.Fatalf("run status = %s, want completed (error=%v)", run.Status, deref(run.Error))
 	}
 	if run.HeadSHA == preDocumentHead {
 		t.Fatalf("Document did not advance the tested head %s", preDocumentHead)
@@ -167,46 +157,55 @@ func TestPRWhatChangedScopesToFinalDiffWhileEvidenceStaysStepScoped(t *testing.T
 		}
 	}
 
-	body := createdPRBody(t, readGHStubInvocations(t, ghLog))
+	invocations := readGHStubInvocations(t, ghLog)
+	body := createdPRBody(t, invocations)
+	comment := validationCommentAfterPRCreate(t, invocations)
 	for _, want := range wantFiles {
 		if !strings.Contains(body, want) {
-			t.Fatalf("final PR body missing final-diff file %q:\n%s", want, body)
+			t.Fatalf("concise PR description missing final-diff claim %q:\n%s", want, body)
 		}
 	}
-
-	// The `## What Changed` narrative is final-diff scoped: it must never
-	// present the Test step's own pre-Document evidence as though it
-	// described the shipped four-file branch.
-	whatChangedIdx := strings.Index(body, "## What Changed")
-	if whatChangedIdx < 0 {
-		t.Fatalf("final PR body missing What Changed section:\n%s", body)
+	for _, forbidden := range []string{"## What Changed", "## Risk Assessment", "## Testing", "## Pipeline", staleTwoFileEvidence} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("concise PR description contains detailed content %q:\n%s", forbidden, body)
+		}
 	}
-	whatChangedSection := body[whatChangedIdx:]
-	if next := strings.Index(whatChangedSection[len("## What Changed"):], "\n## "); next >= 0 {
-		whatChangedSection = whatChangedSection[:len("## What Changed")+next]
-	}
-	if strings.Contains(whatChangedSection, staleTwoFileEvidence) {
-		t.Fatalf("stale pre-Document Test evidence leaked into the final-diff-scoped What Changed narrative:\n%s", whatChangedSection)
+	if strings.Count(body, "<!-- no-mistakes-pipeline-attestation:v1 ") != 1 {
+		t.Fatalf("description must retain exactly one enforcement attestation:\n%s", body)
 	}
 
-	// The deterministic Risk Assessment, Testing, and Pipeline sections stay
-	// step-scoped evidence in their full pre-#605 form: each legitimately
-	// describes the commit its own step inspected, under its own heading.
-	if !strings.Contains(body, "## Risk Assessment") {
-		t.Fatalf("final PR body must restore the deterministic Risk Assessment section:\n%s", body)
+	for _, want := range []string{
+		"## Validation evidence",
+		"Validated head: `" + run.HeadSHA + "`",
+		"## Risk Assessment",
+		"medium risk because only two source files changed",
+		"## Testing",
+		"Focused validation passed at the test step target commit.",
+		"## Pipeline",
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("managed validation comment missing %q:\n%s", want, comment)
+		}
 	}
-	if !strings.Contains(body, "medium risk because only two source files changed") {
-		t.Fatalf("Risk Assessment section must retain the Review step's own recorded rationale:\n%s", body)
+	if strings.Contains(comment, "<!-- no-mistakes-pipeline-attestation:v1 ") {
+		t.Fatalf("managed validation comment must not duplicate the enforcement record:\n%s", comment)
 	}
-	if !strings.Contains(body, "## Testing") {
-		t.Fatalf("final PR body must restore the deterministic Testing section:\n%s", body)
+}
+
+func validationCommentAfterPRCreate(t *testing.T, invocations []ghStubInvocation) string {
+	t.Helper()
+	seenCreate := false
+	for _, inv := range invocations {
+		if len(inv.Args) >= 2 && inv.Args[0] == "pr" && inv.Args[1] == "create" {
+			seenCreate = true
+			continue
+		}
+		if seenCreate && len(inv.Args) > 0 && inv.Args[0] == "api" && inv.Body != "" && strings.Contains(inv.Body, "## Validation evidence") {
+			return inv.Body
+		}
 	}
-	if !strings.Contains(body, "Focused validation passed at the test step target commit.") {
-		t.Fatalf("Testing section must retain the Test step's own recorded evidence:\n%s", body)
-	}
-	if !strings.Contains(body, "## Pipeline") {
-		t.Fatalf("final PR body must restore the rich Pipeline section:\n%s", body)
-	}
+	t.Fatalf("no managed validation-comment write after PR create in %+v", invocations)
+	return ""
 }
 
 func createdPRBody(t *testing.T, invocations []ghStubInvocation) string {

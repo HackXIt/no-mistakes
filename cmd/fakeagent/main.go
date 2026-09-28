@@ -86,6 +86,9 @@ type ghStubInvocation struct {
 }
 
 func runGhForkPRStub(args []string) int {
+	if len(args) >= 1 && args[0] == "api" && strings.Contains(strings.Join(args, " "), "/issues/") && strings.Contains(strings.Join(args, " "), "comments") {
+		return runGhManagedCommentStub(args)
+	}
 	recordGhStubInvocation(args)
 
 	if len(args) >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -131,6 +134,10 @@ func runGhForkPRStub(args []string) int {
 }
 
 func recordGhStubInvocation(args []string) {
+	recordGhStubInvocationWithBody(args, "", false)
+}
+
+func recordGhStubInvocationWithBody(args []string, body string, supplied bool) {
 	logPath := os.Getenv("FAKEAGENT_GH_LOG")
 	if logPath == "" {
 		return
@@ -148,11 +155,115 @@ func recordGhStubInvocation(args []string) {
 		Head: argAfter(args, "--head"),
 		Base: argAfter(args, "--base"),
 	}
-	if hasArgValue(args, "--body-file", "-") {
-		body, _ := io.ReadAll(os.Stdin)
-		inv.Body = string(body)
+	if supplied {
+		inv.Body = body
+	} else if hasArgValue(args, "--body-file", "-") {
+		data, _ := io.ReadAll(os.Stdin)
+		inv.Body = string(data)
 	}
 	_ = json.NewEncoder(f).Encode(inv)
+}
+
+// The e2e GitHub stub persists ordinary issue comments across separate gh
+// processes so the real PR step can exercise complete list/create/update and
+// read-after-write settlement without contacting GitHub.
+type ghManagedComment struct {
+	ID       int64   `json:"id"`
+	Body     *string `json:"body"`
+	HTMLURL  string  `json:"html_url"`
+	IssueURL string  `json:"issue_url"`
+}
+
+func runGhManagedCommentStub(args []string) int {
+	statePath := os.Getenv("FAKEAGENT_GH_COMMENT_FILE")
+	if statePath == "" {
+		statePath = os.Getenv("FAKEAGENT_GH_LOG") + ".comments"
+	}
+	comments := make([]ghManagedComment, 0)
+	if data, err := os.ReadFile(statePath); err == nil {
+		if json.Unmarshal(data, &comments) != nil {
+			fmt.Fprintln(os.Stderr, "fakeagent gh: invalid managed-comment state")
+			return 1
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	method := argAfter(args, "--method")
+	if method == "" {
+		method = "GET"
+	}
+	endpoint := ""
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "repos/") && strings.Contains(arg, "/issues/") && strings.Contains(arg, "comments") {
+			endpoint = arg
+			break
+		}
+	}
+	if endpoint == "" {
+		fmt.Fprintln(os.Stderr, "fakeagent gh: managed-comment endpoint missing")
+		return 1
+	}
+	if method == "GET" {
+		recordGhStubInvocation(args)
+		data, _ := json.Marshal(comments)
+		fmt.Println(string(data))
+		return 0
+	}
+
+	payload, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var input struct {
+		Body string `json:"body"`
+	}
+	if json.Unmarshal(payload, &input) != nil {
+		fmt.Fprintln(os.Stderr, "fakeagent gh: invalid managed-comment payload")
+		return 1
+	}
+	recordGhStubInvocationWithBody(args, input.Body, true)
+
+	repoAndIssue := strings.TrimPrefix(endpoint, "repos/")
+	repo, issuePart, ok := strings.Cut(repoAndIssue, "/issues/")
+	if !ok {
+		fmt.Fprintln(os.Stderr, "fakeagent gh: invalid managed-comment endpoint")
+		return 1
+	}
+	number := strings.SplitN(issuePart, "/", 2)[0]
+	issueURL := "https://api.github.com/repos/" + repo + "/issues/" + number
+	if method == "POST" {
+		body := input.Body
+		comment := ghManagedComment{ID: 777, Body: &body, HTMLURL: "https://github.com/" + repo + "/pull/" + number + "#issuecomment-777", IssueURL: issueURL}
+		comments = append(comments, comment)
+		writeGhManagedComments(statePath, comments)
+		data, _ := json.Marshal(comment)
+		fmt.Println(string(data))
+		return 0
+	}
+	if method == "PATCH" {
+		idText := endpoint[strings.LastIndex(endpoint, "/")+1:]
+		id, _ := strconv.ParseInt(idText, 10, 64)
+		for i := range comments {
+			if comments[i].ID != id {
+				continue
+			}
+			comments[i].Body = &input.Body
+			writeGhManagedComments(statePath, comments)
+			data, _ := json.Marshal(comments[i])
+			fmt.Println(string(data))
+			return 0
+		}
+	}
+	fmt.Fprintln(os.Stderr, "fakeagent gh: managed comment not found")
+	return 1
+}
+
+func writeGhManagedComments(path string, comments []ghManagedComment) {
+	data, _ := json.Marshal(comments)
+	_ = os.WriteFile(path, data, 0o644)
 }
 
 // runTeaStub shadows any system-installed tea during the Gitea provider e2e
@@ -171,6 +282,9 @@ func runTeaStub(args []string) int {
 	if len(args) >= 1 && args[0] == "api" && args[len(args)-1] == "/user" {
 		fmt.Println(`{"login":"e2e-tea-user"}`)
 		return 0
+	}
+	if len(args) >= 1 && args[0] == "api" && strings.Contains(args[len(args)-1], "/issues/") && strings.Contains(args[len(args)-1], "comments") {
+		return runTeaManagedCommentStub(args)
 	}
 	if len(args) >= 2 && args[0] == "pulls" && args[1] == "list" {
 		fmt.Println("[]")
@@ -204,6 +318,67 @@ func runTeaStub(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "fakeagent tea: subcommand not implemented in e2e stub: %v\n", args)
 	return 1
+}
+
+type teaManagedComment struct {
+	ID       int64   `json:"id"`
+	Body     *string `json:"body"`
+	HTMLURL  string  `json:"html_url"`
+	IssueURL string  `json:"issue_url"`
+}
+
+func runTeaManagedCommentStub(args []string) int {
+	statePath := os.Getenv("FAKEAGENT_TEA_LOG") + ".comments"
+	comments := make([]teaManagedComment, 0)
+	if data, err := os.ReadFile(statePath); err == nil {
+		if json.Unmarshal(data, &comments) != nil {
+			return 1
+		}
+	} else if !os.IsNotExist(err) {
+		return 1
+	}
+	method := argAfter(args, "--method")
+	endpoint := args[len(args)-1]
+	if method == "" || method == "GET" {
+		data, _ := json.Marshal(comments)
+		fmt.Println(string(data))
+		return 0
+	}
+	field := argAfter(args, "--field")
+	body := strings.TrimPrefix(field, "body=")
+	host := os.Getenv("FAKEAGENT_TEA_HOST")
+	if host == "" {
+		host = "gitea.example.com"
+	}
+	trimmed := strings.TrimPrefix(endpoint, "/repos/")
+	repo, issuePart, _ := strings.Cut(trimmed, "/issues/")
+	number := strings.SplitN(issuePart, "/", 2)[0]
+	if method == "POST" {
+		comment := teaManagedComment{ID: 777, Body: &body, HTMLURL: "https://" + host + "/" + repo + "/pulls/" + number + "#issuecomment-777", IssueURL: "https://" + host + "/api/v1/repos/" + repo + "/issues/" + number}
+		comments = append(comments, comment)
+		writeTeaManagedComments(statePath, comments)
+		data, _ := json.Marshal(comment)
+		fmt.Println(string(data))
+		return 0
+	}
+	if method == "PATCH" {
+		id, _ := strconv.ParseInt(endpoint[strings.LastIndex(endpoint, "/")+1:], 10, 64)
+		for i := range comments {
+			if comments[i].ID == id {
+				comments[i].Body = &body
+				writeTeaManagedComments(statePath, comments)
+				data, _ := json.Marshal(comments[i])
+				fmt.Println(string(data))
+				return 0
+			}
+		}
+	}
+	return 1
+}
+
+func writeTeaManagedComments(path string, comments []teaManagedComment) {
+	data, _ := json.Marshal(comments)
+	_ = os.WriteFile(path, data, 0o644)
 }
 
 type teaStubInvocation struct {

@@ -333,16 +333,13 @@ func TestPRStep_ExecuteRedactsAbsoluteHomePathsBeforePublishing(t *testing.T) {
 	}
 }
 
-// TestPRStep_BuildPRContentRedactsAfterClampingToHostLimit pins the ordering
-// property redaction depends on: it runs last, and because the placeholder is
-// never longer than what it replaces it can only shrink an already clamped
-// body.
-func TestPRStep_BuildPRContentRedactsAfterClampingToHostLimit(t *testing.T) {
+// TestPRStep_BuildPRContentRedactsBeforeApplyingTheHostLimit pins the ordering
+// property for the concise description plus compact machine trailer.
+func TestPRStep_BuildPRContentRedactsBeforeApplyingTheHostLimit(t *testing.T) {
 	t.Parallel()
 	tc := homePathLeakCase{
 		evidenceDir: fixtureEvidenceDir,
-		agentBody: "## What Changed\n\n- evidence now lands under " + fixtureEvidenceDir + "\n" +
-			strings.Repeat("- and a long tail of change notes that overruns the host cap\n", 200),
+		agentBody:   "## What Changed\n\n- evidence now lands under " + fixtureEvidenceDir + "\n- keep the public summary concise",
 		wantVisible: []string{"evidence now lands under " + fixtureRedactedPath(".no-mistakes", "evidence", "run-1")},
 	}
 	limit := scm.MaxPRBodyChars(scm.ProviderAzureDevOps)

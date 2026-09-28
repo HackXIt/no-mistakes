@@ -83,9 +83,6 @@ func renderPRWithScreenshot(t *testing.T, uploader userAssetUploader, configure 
 		configure(ctx)
 	}
 	step := &PRStep{mediaUploader: uploader}
-	if _, err := step.buildPRContent(sctx, "feature", "main", baseSHA, ctx.provider, 0); err != nil {
-		t.Fatal(err)
-	}
 	return validationCommentForTest(t, step, sctx, ctx.provider), strings.Join(logLines, "\n")
 }
 
@@ -131,13 +128,7 @@ func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
 	step := &PRStep{mediaUploader: uploader}
 
-	if _, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	first := validationCommentForTest(t, step, sctx, scm.ProviderGitHub)
-	if _, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	second := validationCommentForTest(t, step, sctx, scm.ProviderGitHub)
 	if len(uploader.calls) != 1 {
 		t.Fatalf("uploads across two renders = %d, want 1", len(uploader.calls))
@@ -160,9 +151,6 @@ func TestPRStep_DeduplicatesScreenshotUploadsByPath(t *testing.T) {
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
 
 	step := &PRStep{mediaUploader: uploader}
-	if _, err := step.buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	body := validationCommentForTest(t, step, sctx, scm.ProviderGitHub)
 	if len(uploader.calls) != 1 {
 		t.Fatalf("uploads = %d, want 1", len(uploader.calls))
@@ -184,9 +172,6 @@ func TestPRStep_StoreInRepoKeepsCommitLinkAndAttachment(t *testing.T) {
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
 
 	step := &PRStep{mediaUploader: uploader}
-	if _, err := step.buildPRContent(sctx, "feature/add-login", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	body := validationCommentForTest(t, step, sctx, scm.ProviderGitHub)
 	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.png"
@@ -220,18 +205,12 @@ func TestPRStep_UploadFailureKeepsTodaysRendering(t *testing.T) {
 	disabled := makeCtx(prDraftAgent())
 	disabled.Config.Test.Evidence.AttachMedia = false
 	todayStep := &PRStep{}
-	if _, err := todayStep.buildPRContent(disabled, "feature", "main", baseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	today := validationCommentForTest(t, todayStep, disabled, scm.ProviderGitHub)
 
 	var logs []string
 	failing := makeCtx(prDraftAgent())
 	failing.Log = func(line string) { logs = append(logs, line) }
 	failedStep := &PRStep{mediaUploader: &stubMediaUploader{err: errors.New("upload endpoint 500")}}
-	if _, err := failedStep.buildPRContent(failing, "feature", "main", baseSHA, scm.ProviderGitHub, 0); err != nil {
-		t.Fatal(err)
-	}
 	failed := validationCommentForTest(t, failedStep, failing, scm.ProviderGitHub)
 	if failed != today {
 		t.Fatalf("upload failure must keep today's validation comment.\ntoday:\n%s\nfailed:\n%s", today, failed)
@@ -275,18 +254,15 @@ func TestPRStep_TextArtifactIsNotUploaded(t *testing.T) {
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"log","label":"CLI run","path":%q}]}`, logPath)
 	insertCompletedStep(t, sctx, types.StepTest, findings, "")
 	uploader := &stubMediaUploader{t: t}
-	_, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub)
 	if len(uploader.calls) != 0 {
 		t.Fatalf("text artifacts must not upload, calls=%v", uploader.calls)
 	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "user-attachments") {
-		t.Fatalf("text artifact must not become a user-attachment, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "user-attachments") {
+		t.Fatalf("text artifact must not become a user-attachment, got:\n%s", body)
 	}
-	if !strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "it works") {
-		t.Fatalf("expected inlined text evidence, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if !strings.Contains(body, "it works") {
+		t.Fatalf("expected inlined text evidence, got:\n%s", body)
 	}
 }
 
@@ -300,18 +276,15 @@ func TestPRStep_OversizedImageIsSkippedWithReason(t *testing.T) {
 	var logs []string
 	sctx.Log = func(line string) { logs = append(logs, line) }
 	uploader := &stubMediaUploader{t: t}
-	_, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub)
 	if len(uploader.calls) != 0 {
 		t.Fatalf("oversized image must not upload, calls=%v", uploader.calls)
 	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "user-attachments") {
-		t.Fatalf("oversized image must not embed an attachment, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "user-attachments") {
+		t.Fatalf("oversized image must not embed an attachment, got:\n%s", body)
 	}
-	if !strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "local file:") {
-		t.Fatalf("oversized image should keep local rendering, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if !strings.Contains(body, "local file:") {
+		t.Fatalf("oversized image should keep local rendering, got:\n%s", body)
 	}
 	if !strings.Contains(strings.Join(logs, "\n"), "images must be at most") {
 		t.Fatalf("expected size-limit skip reason, got %q", logs)
@@ -345,18 +318,14 @@ func TestPRStep_OversizedImagePreservesCommittedPath(t *testing.T) {
 	var logs []string
 	sctx.Log = func(line string) { logs = append(logs, line) }
 	uploader := &stubMediaUploader{t: t}
-
-	_, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature/add-login", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub)
 	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/oversize.png"
-	if !strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), wantLink) {
-		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if !strings.Contains(body, wantLink) {
+		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", body)
 	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "user-attachments") {
-		t.Fatalf("oversized image must not embed an attachment, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "user-attachments") {
+		t.Fatalf("oversized image must not embed an attachment, got:\n%s", body)
 	}
 	if len(uploader.calls) != 0 {
 		t.Fatalf("oversized image must not upload, calls=%v", uploader.calls)
@@ -375,18 +344,14 @@ func TestPRStep_UnsupportedImagePreservesCommittedPath(t *testing.T) {
 	var logs []string
 	sctx.Log = func(line string) { logs = append(logs, line) }
 	uploader := &stubMediaUploader{t: t}
-
-	_, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature/add-login", "main", sctx.Run.BaseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	body := validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub)
 	tip := gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence")
 	wantLink := "https://github.com/example/widgets/blob/" + tip + "/.no-mistakes/evidence/feature/add-login/checkout.bmp"
-	if !strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), wantLink) {
-		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if !strings.Contains(body, wantLink) {
+		t.Fatalf("expected committed evidence path to be preserved, got:\n%s", body)
 	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "user-attachments") {
-		t.Fatalf("unsupported image must not embed an attachment, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "user-attachments") {
+		t.Fatalf("unsupported image must not embed an attachment, got:\n%s", body)
 	}
 	if len(uploader.calls) != 0 {
 		t.Fatalf("unsupported image must not upload, calls=%v", uploader.calls)
@@ -405,17 +370,14 @@ func TestPRStep_VideoAttachmentIsBareURL(t *testing.T) {
 	findings := fmt.Sprintf(`{"findings":[],"summary":"","testing_summary":"Evidence was collected.","artifacts":[{"kind":"video","label":"Checkout recording","path":%q}]}`, video)
 	insertCompletedStep(t, sctx, types.StepTest, findings, "")
 	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.mp4": testAttachmentURL}}
-	_, err := (&PRStep{mediaUploader: uploader}).buildPRContent(sctx, "feature", "main", baseSHA, scm.ProviderGitHub, 0)
-	if err != nil {
-		t.Fatal(err)
+	body := validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub)
+	if !strings.Contains(body, testAttachmentURL+"\n") {
+		t.Fatalf("expected bare video URL, got:\n%s", body)
 	}
-	if !strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), testAttachmentURL+"\n") {
-		t.Fatalf("expected bare video URL, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "![Checkout recording](") {
+		t.Fatalf("video must not use image markdown, got:\n%s", body)
 	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "![Checkout recording](") {
-		t.Fatalf("video must not use image markdown, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
-	}
-	if strings.Contains(validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub), "local file:") {
-		t.Fatalf("uploaded video must not cite a local path, got:\n%s", validationCommentForTest(t, &PRStep{mediaUploader: uploader}, sctx, scm.ProviderGitHub))
+	if strings.Contains(body, "local file:") {
+		t.Fatalf("uploaded video must not cite a local path, got:\n%s", body)
 	}
 }

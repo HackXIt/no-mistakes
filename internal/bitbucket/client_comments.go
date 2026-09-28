@@ -12,10 +12,20 @@ type PRComment struct {
 	URL  string
 }
 
+const maxBitbucketPRCommentPages = 100
+
 func (c *Client) ListPRComments(ctx context.Context, repo RepoRef, prID int) ([]PRComment, error) {
 	next := fmt.Sprintf("%s/%d/comments?pagelen=100", repoPRPath(repo), prID)
 	comments := make([]PRComment, 0)
-	for next != "" {
+	visited := make(map[string]struct{})
+	for page := 1; next != ""; page++ {
+		if page > maxBitbucketPRCommentPages {
+			return nil, fmt.Errorf("Bitbucket PR comment pagination exceeded %d pages", maxBitbucketPRCommentPages)
+		}
+		if _, ok := visited[next]; ok {
+			return nil, fmt.Errorf("Bitbucket PR comment pagination repeated a page")
+		}
+		visited[next] = struct{}{}
 		var response *struct {
 			Values []bitbucketPRComment `json:"values"`
 			Next   string               `json:"next"`
@@ -27,6 +37,9 @@ func (c *Client) ListPRComments(ctx context.Context, repo RepoRef, prID int) ([]
 			return nil, fmt.Errorf("decode Bitbucket PR comments: expected values array")
 		}
 		for _, raw := range response.Values {
+			if raw.Deleted {
+				continue
+			}
 			comment, err := normalizeBitbucketPRComment(raw, 0)
 			if err != nil {
 				return nil, err
@@ -81,7 +94,8 @@ func (c *Client) UpdatePRComment(ctx context.Context, repo RepoRef, prID, commen
 }
 
 type bitbucketPRComment struct {
-	ID      int `json:"id"`
+	ID      int  `json:"id"`
+	Deleted bool `json:"deleted"`
 	Content *struct {
 		Raw *string `json:"raw"`
 	} `json:"content"`
@@ -93,7 +107,7 @@ type bitbucketPRComment struct {
 }
 
 func normalizeBitbucketPRComment(raw bitbucketPRComment, expectedID int) (PRComment, error) {
-	if raw.ID <= 0 || raw.Content == nil || raw.Content.Raw == nil {
+	if raw.ID <= 0 || raw.Deleted || raw.Content == nil || raw.Content.Raw == nil {
 		return PRComment{}, fmt.Errorf("Bitbucket PR comment response was incomplete")
 	}
 	if expectedID > 0 && raw.ID != expectedID {

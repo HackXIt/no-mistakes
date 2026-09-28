@@ -30,7 +30,7 @@ func TestManagedPRCommentTransport(t *testing.T) {
 		response := ""
 		switch {
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method GET"):
-			response = `{"count":1,"value":[{"id":21,"comments":[{"id":1,"parentCommentId":0,"content":"old","commentType":1,"isDeleted":false}]}]}`
+			response = `{"count":1,"value":[{"id":21,"comments":[{"id":9,"parentCommentId":0,"content":"provider event","commentType":2,"isDeleted":false},{"id":1,"parentCommentId":0,"content":"old","commentType":1,"isDeleted":false}]}]}`
 		case strings.Contains(joined, "--resource pullRequestThreads") && strings.Contains(joined, "--http-method POST"):
 			response = `{"id":22,"comments":[{"id":1,"parentCommentId":0,"content":"validation body","commentType":1,"isDeleted":false}]}`
 		case strings.Contains(joined, "--resource pullRequestThreadComments") && strings.Contains(joined, "--http-method PATCH"):

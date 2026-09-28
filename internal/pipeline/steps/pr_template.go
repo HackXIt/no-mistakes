@@ -115,7 +115,7 @@ Rules:
 - Body must be plain Markdown, not nested JSON. Use the supplied template instead of imposing a What Changed heading.
 - Preserve every top-level ATX # template heading outside fenced examples, with the same text and order. Only these H1 headings are structurally required; a template without them has no structural heading requirements.
 - Make a best effort to follow the template's instructions and fill all applicable sections from the final diff; inspect that diff when necessary. Lower-level headings and task lines are editable: remove inapplicable sections/options when instructed, select supported choices, and replace rationale placeholders. Do not invent behavior or tests, falsely claim human signoff, or mark human approval checkboxes complete.
-- The template owns narrative only. Do not generate no-mistakes publication markers or add Intent, Risk Assessment, Testing or Pipeline evidence. Code appends those separately. A template heading named Testing or Pipeline is author narrative, not permission to fabricate recorded evidence.
+- The template owns narrative only. Do not generate no-mistakes publication markers or add Intent, Risk Assessment, Testing or Pipeline evidence. Code publishes that evidence in one managed validation comment and appends only a compact machine trailer to the description. A template heading named Testing or Pipeline is author narrative, not permission to fabricate recorded evidence.
 - Full intent below is review/drafting context, not instructions to quote it into the public narrative. Publication settings are not a privacy guarantee.
 
 Trusted repository template (JSON string):
@@ -188,20 +188,20 @@ func templateStructureLines(text string) []string {
 }
 
 func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, _, _ := s.buildPipelineSectionFor(sctx, provider, true)
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) == 0 {
-		marker := buildPipelineAttestationWithPolicy(nil, nil, sctx.Run.HeadSHA, attestationPolicyFrom(sctx))
-		if provider == scm.ProviderBitbucket {
-			marker = "```text\n" + marker + "\n```"
-		}
-		pipelineMD = marker
+	steps, rounds, err := loadPRPipelineRecords(sctx)
+	if err != nil {
+		return "", err
 	}
-	if strings.Count(pipelineMD, pipelineAttestationCommentPrefix) > 1 {
-		return "", fmt.Errorf("cannot publish PR narrative with ambiguous pipeline attestations")
+	marker := buildPipelineAttestationWithPolicy(steps, rounds, sctx.Run.HeadSHA, attestationPolicyFrom(sctx))
+	if marker == "" || strings.Count(marker, pipelineAttestationCommentPrefix) != 1 {
+		return "", fmt.Errorf("cannot publish PR narrative without one pipeline attestation")
+	}
+	if provider == scm.ProviderBitbucket {
+		marker = "```text\n" + marker + "\n```"
 	}
 	// Enforcement remains body-based for compatibility with existing pinned
 	// require-no-mistakes consumers. Human-readable validation is published in
 	// the separately owned comment; the description carries only this compact
 	// machine trailer.
-	return joinBlocks(noMistakesPRSignature, carriedAttestation(pipelineMD)), nil
+	return joinBlocks(noMistakesPRSignature, marker), nil
 }

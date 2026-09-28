@@ -15,9 +15,11 @@ import (
 
 type managedCommentTestHost struct {
 	scm.Host
-	comments []scm.PRComment
-	creates  int
-	updates  int
+	comments        []scm.PRComment
+	creates         int
+	updates         int
+	listCalls       int
+	hiddenListCalls map[int]bool
 }
 
 func (h *managedCommentTestHost) Provider() scm.Provider { return scm.ProviderGitHub }
@@ -25,6 +27,16 @@ func (h *managedCommentTestHost) Capabilities() scm.Capabilities {
 	return scm.Capabilities{ManagedPRComments: true}
 }
 func (h *managedCommentTestHost) ListPRComments(context.Context, *scm.PR) ([]scm.PRComment, error) {
+	h.listCalls++
+	if h.hiddenListCalls[h.listCalls] {
+		var visible []scm.PRComment
+		for _, comment := range h.comments {
+			if _, owned, _ := parseValidationComment(comment); !owned {
+				visible = append(visible, comment)
+			}
+		}
+		return visible, nil
+	}
 	return append([]scm.PRComment(nil), h.comments...), nil
 }
 func (h *managedCommentTestHost) CreatePRComment(_ context.Context, _ *scm.PR, body string) (scm.PRComment, error) {
@@ -72,6 +84,21 @@ func TestPublishValidationCommentCreatesThenUpdatesInPlaceAndPreservesHumanComme
 	}
 	if host.comments[0].Body != "maintainer note" || host.comments[1].ID != "7" || host.comments[1].Body != second {
 		t.Fatalf("comment ownership was not preserved: %+v", host.comments)
+	}
+}
+
+func TestPublishValidationCommentSettlesDelayedCreateVisibilityWithoutDuplicating(t *testing.T) {
+	url := "https://github.com/test/repo/pull/42"
+	host := &managedCommentTestHost{hiddenListCalls: map[int]bool{2: true}}
+	body := wrapValidationComment("validation")
+	if err := publishValidationComment(managedCommentContext(url), host, &scm.PR{Number: "42", URL: url}, body); err != nil {
+		t.Fatal(err)
+	}
+	if host.creates != 1 || host.updates != 0 || len(host.comments) != 1 {
+		t.Fatalf("creates=%d updates=%d comments=%+v", host.creates, host.updates, host.comments)
+	}
+	if host.listCalls < 3 {
+		t.Fatalf("list calls=%d, want a bounded settlement re-read", host.listCalls)
 	}
 }
 
@@ -133,7 +160,7 @@ func TestPRPublicationSeparatesConciseDescriptionFromDetailedValidation(t *testi
 	if !strings.Contains(content.Body, "Keep descriptions concise") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
 		t.Fatalf("description lost narrative or compact attestation:\n%s", content.Body)
 	}
-	for _, want := range []string{validationCommentHeading, "## Intent", "## Risk Assessment", "## Testing", "## Pipeline", "go test ./...", "Provider contract tests passed"} {
+	for _, want := range []string{validationCommentHeading, validationCommentHeadLabel + ": `" + head + "`", "## Intent", "## Risk Assessment", "## Testing", "## Pipeline", "go test ./...", "Provider contract tests passed"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("validation comment missing %q:\n%s", want, comment)
 		}
@@ -149,6 +176,62 @@ func TestPRPublicationSeparatesConciseDescriptionFromDetailedValidation(t *testi
 	}
 	if got, out := runVerifyPy(t, content.Body, head); got != "success" {
 		t.Fatalf("body-based enforcement contract changed: %s\n%s", got, out)
+	}
+}
+
+func TestNormalizeSquashDescriptionRejectsLongFormOrDuplicateShapes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		body  string
+		title string
+		want  string
+		valid bool
+	}{
+		{name: "paragraph", body: "A concise branch summary.", title: "fix: concise publication", want: "A concise branch summary.", valid: true},
+		{name: "heading and bullets", body: "## What Changed\n\n* first\n* second\n* third", title: "fix: concise publication", want: "- first\n- second\n- third", valid: true},
+		{name: "too many bullets", body: "- one\n- two\n- three\n- four", title: "fix: concise publication"},
+		{name: "multiple paragraphs", body: "First paragraph.\n\nSecond paragraph.", title: "fix: concise publication"},
+		{name: "command fence", body: "```text\ngo test ./...\n```", title: "fix: concise publication"},
+		{name: "repeats title", body: "fix: concise publication", title: "fix: concise publication"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := normalizeSquashDescription(tt.body, tt.title)
+			if valid != tt.valid || got != tt.want {
+				t.Fatalf("normalizeSquashDescription() = %q, %v; want %q, %v", got, valid, tt.want, tt.valid)
+			}
+		})
+	}
+}
+
+func TestFitValidationCommentKeepsMarkdownBalancedWithinBudget(t *testing.T) {
+	t.Parallel()
+	var rounds []string
+	for i := 0; i < 40; i++ {
+		rounds = append(rounds, strings.Repeat("recorded validation detail ", 40))
+	}
+	testing := "## Testing\n\n<details>\n<summary>large artifact</summary>\n\n" + strings.Repeat("artifact output\n", 300) + "</details>"
+	got := fitValidationComment(
+		validationCommentHeading,
+		validationCommentHeadLabel+": `"+strings.Repeat("a", 40)+"`",
+		"## Intent\n\n"+strings.Repeat("intent ", 200),
+		strings.Repeat("risk ", 100),
+		testing,
+		pipelineMarkdownForTest(rounds...),
+		4096,
+	)
+	if len(got) > 4096 {
+		t.Fatalf("validation comment content = %d bytes, want <= 4096", len(got))
+	}
+	if !strings.Contains(got, strings.TrimSpace(validationTruncationMarker)) {
+		t.Fatalf("truncated validation omitted its marker:\n%s", got)
+	}
+	if strings.Count(got, "<details>") != strings.Count(got, "</details>") {
+		t.Fatalf("truncated validation left unbalanced details blocks:\n%s", got)
+	}
+	if !strings.Contains(got, "## Pipeline") {
+		t.Fatalf("truncated validation lost the pipeline section without an omission marker:\n%s", got)
 	}
 }
 

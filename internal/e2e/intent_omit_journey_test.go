@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,10 +80,11 @@ func writeOmitIntentScenario(t *testing.T) string {
 // controls through the real binary, daemon, gate hook, and a fork-routed PR
 // creation captured by the gh stub:
 //
-//   - a plain `axi run --intent` publishes the `## Intent` section (baseline);
+//   - a plain `axi run --intent` publishes the `## Intent` section in the
+//     managed validation comment (baseline);
 //   - `axi run --intent --no-publish-intent` keeps the section and the intent
-//     text out of the PR body while the review and PR-drafting prompts still
-//     receive the full intent;
+//     text out of both publication surfaces while the review prompt still
+//     receives the full intent;
 //   - a bare `rerun` after an omitting run inherits the omission;
 //   - `intent.publish_intent: false` in global config omits the section for a
 //     run started without the flag;
@@ -118,21 +120,36 @@ func TestOmitIntentJourney(t *testing.T) {
 		t.Fatalf("init with fork URL: %v\n%s", err, out)
 	}
 
-	// prBodyFor returns the body of the LATEST PR create for the run's branch,
-	// so a rerun's create supersedes the original run's.
-	prBodyFor := func(run *ipc.RunInfo) string {
+	// publicationFor returns the latest PR create for the run's branch and the
+	// managed-comment write that follows it, so a rerun supersedes the original.
+	publicationFor := func(run *ipc.RunInfo) (string, string) {
 		t.Helper()
-		var prBody string
-		for _, inv := range readGHStubInvocations(t, ghLog) {
+		invocations := readGHStubInvocations(t, ghLog)
+		createAt := -1
+		for i, inv := range invocations {
 			if len(inv.Args) >= 2 && inv.Args[0] == "pr" && inv.Args[1] == "create" && strings.HasSuffix(inv.Head, ":"+run.Branch) {
-				prBody = inv.Body
+				createAt = i
 			}
 		}
-		if prBody == "" {
+		if createAt < 0 || invocations[createAt].Body == "" {
 			t.Fatalf("no PR create for branch %s in gh log", run.Branch)
 		}
-		t.Logf("PR body for %s (run %s, omit_intent=%v):\n%s", run.Branch, run.ID, run.OmitIntent, prBody)
-		return prBody
+		for _, inv := range invocations[createAt+1:] {
+			if len(inv.Args) > 0 && inv.Args[0] == "api" && strings.Contains(inv.Body, "## Validation evidence") {
+				t.Logf("publication for %s (run %s, omit_intent=%v):\ndescription:\n%s\ncomment:\n%s", run.Branch, run.ID, run.OmitIntent, invocations[createAt].Body, inv.Body)
+				return invocations[createAt].Body, inv.Body
+			}
+		}
+		// An idempotent rerun may discover that the settled comment is already
+		// byte-identical and correctly perform no write. Reuse the latest prior
+		// managed-comment write captured by this stateful forge stub.
+		for i := len(invocations) - 1; i >= 0; i-- {
+			if strings.Contains(invocations[i].Body, "## Validation evidence") {
+				return invocations[createAt].Body, invocations[i].Body
+			}
+		}
+		t.Fatalf("no validation comment was settled for branch %s in gh log", run.Branch)
+		return "", ""
 	}
 	// promptsCarry proves the omission changes only publication for the
 	// review prompt, which keeps the full intent, while the PR-drafting turn
@@ -176,9 +193,12 @@ func TestOmitIntentJourney(t *testing.T) {
 	if baseline.OmitIntent {
 		t.Fatalf("baseline run recorded omit_intent without any control set")
 	}
-	baselineBody := prBodyFor(baseline)
-	if !strings.Contains(baselineBody, "## Intent") || !strings.Contains(baselineBody, publishedIntent) {
-		t.Fatalf("baseline PR body must publish the Intent section:\n%s", baselineBody)
+	baselineBody, baselineComment := publicationFor(baseline)
+	if strings.Contains(baselineBody, "## Intent") || strings.Contains(baselineBody, publishedIntent) {
+		t.Fatalf("baseline concise description leaked detailed Intent content:\n%s", baselineBody)
+	}
+	if !strings.Contains(baselineComment, "## Intent") || !strings.Contains(baselineComment, publishedIntent) {
+		t.Fatalf("baseline validation comment must publish the Intent section:\n%s", baselineComment)
 	}
 
 	// Per-run flag: section gone, prompts unchanged.
@@ -195,12 +215,12 @@ func TestOmitIntentJourney(t *testing.T) {
 	if !flagged.OmitIntent {
 		t.Fatalf("flagged run did not record omit_intent")
 	}
-	flaggedBody := prBodyFor(flagged)
-	if strings.Contains(flaggedBody, "## Intent") || strings.Contains(flaggedBody, "SECRET-INTENT") {
-		t.Fatalf("--no-publish-intent PR body leaked the Intent section:\n%s", flaggedBody)
+	flaggedBody, flaggedComment := publicationFor(flagged)
+	if strings.Contains(flaggedBody, "## Intent") || strings.Contains(flaggedBody, "SECRET-INTENT") || strings.Contains(flaggedComment, "## Intent") || strings.Contains(flaggedComment, "SECRET-INTENT") {
+		t.Fatalf("--no-publish-intent leaked Intent content:\ndescription:\n%s\ncomment:\n%s", flaggedBody, flaggedComment)
 	}
-	if !strings.Contains(flaggedBody, "## What Changed") {
-		t.Fatalf("--no-publish-intent PR body lost the drafted narrative:\n%s", flaggedBody)
+	if !strings.Contains(flaggedBody, "Add the feature file.") {
+		t.Fatalf("--no-publish-intent PR description lost the drafted narrative:\n%s", flaggedBody)
 	}
 	promptsCarry(secretIntent)
 
@@ -210,9 +230,9 @@ func TestOmitIntentJourney(t *testing.T) {
 	if rerun.ID == flagged.ID || !rerun.OmitIntent {
 		t.Fatalf("rerun %s omit_intent=%v, want a new run inheriting omission from %s", rerun.ID, rerun.OmitIntent, flagged.ID)
 	}
-	rerunBody := prBodyFor(rerun)
-	if strings.Contains(rerunBody, "## Intent") || strings.Contains(rerunBody, "SECRET-INTENT") {
-		t.Fatalf("rerun PR body re-published the Intent section:\n%s", rerunBody)
+	rerunBody, rerunComment := publicationFor(rerun)
+	if strings.Contains(rerunBody, "## Intent") || strings.Contains(rerunBody, "SECRET-INTENT") || strings.Contains(rerunComment, "## Intent") || strings.Contains(rerunComment, "SECRET-INTENT") {
+		t.Fatalf("rerun re-published the Intent section:\ndescription:\n%s\ncomment:\n%s", rerunBody, rerunComment)
 	}
 
 	// Global default: intent.publish_intent: false omits for a run started
@@ -238,9 +258,9 @@ func TestOmitIntentJourney(t *testing.T) {
 	if !global.OmitIntent {
 		t.Fatalf("global publish_intent: false did not stamp omit_intent on the run")
 	}
-	globalBody := prBodyFor(global)
-	if strings.Contains(globalBody, "## Intent") || strings.Contains(globalBody, "GLOBAL-DEFAULT") {
-		t.Fatalf("global publish_intent: false PR body leaked the Intent section:\n%s", globalBody)
+	globalBody, globalComment := publicationFor(global)
+	if strings.Contains(globalBody, "## Intent") || strings.Contains(globalBody, "GLOBAL-DEFAULT") || strings.Contains(globalComment, "## Intent") || strings.Contains(globalComment, "GLOBAL-DEFAULT") {
+		t.Fatalf("global publish_intent: false leaked Intent content:\ndescription:\n%s\ncomment:\n%s", globalBody, globalComment)
 	}
 	promptsCarry(globalIntent)
 	if err := os.WriteFile(configPath, original, 0o644); err != nil {
@@ -272,5 +292,30 @@ func TestOmitIntentJourney(t *testing.T) {
 	}
 	if runsOnBranch != 1 {
 		t.Fatalf("refused reattach must not start a second run on %s, got %d runs", omitIntentSlowBranch, runsOnBranch)
+	}
+
+	invocations := readGHStubInvocations(t, ghLog)
+	creates, updates := 0, 0
+	for _, inv := range invocations {
+		joined := strings.Join(inv.Args, " ")
+		if len(inv.Args) == 0 || inv.Args[0] != "api" || !strings.Contains(joined, "/issues/") || !strings.Contains(joined, "comments") {
+			continue
+		}
+		switch {
+		case strings.Contains(joined, "--method POST"):
+			creates++
+		case strings.Contains(joined, "--method PATCH"):
+			updates++
+		}
+	}
+	if creates != 1 || updates == 0 {
+		t.Fatalf("managed validation comment writes: creates=%d updates=%d; want one create and in-place rerun updates", creates, updates)
+	}
+	var settled []struct {
+		ID int64 `json:"id"`
+	}
+	state, err := os.ReadFile(ghLog + ".comments")
+	if err != nil || json.Unmarshal(state, &settled) != nil || len(settled) != 1 {
+		t.Fatalf("managed validation comment was duplicated: err=%v state=%s", err, state)
 	}
 }

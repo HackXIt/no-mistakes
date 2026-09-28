@@ -30,6 +30,14 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 	comments := make([]scm.PRComment, 0)
 	for _, page := range pages {
 		for _, raw := range page {
+			// The notes endpoint mixes ordinary user-authored notes with
+			// provider-generated system events (labels, title changes, etc.).
+			// System notes cannot be the pipeline-owned comment and are not
+			// writable through the ordinary-note update route, so ignore them
+			// while keeping strict validation for every ordinary note.
+			if raw.System {
+				continue
+			}
 			comment, err := normalizeNote(raw, iid, 0)
 			if err != nil {
 				return nil, err

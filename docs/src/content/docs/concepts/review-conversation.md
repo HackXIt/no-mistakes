@@ -73,8 +73,9 @@ directory, but the conversation directory is excluded from the evidence-branch
 publication walk, so opting into
 [`test.evidence.store_in_repo`](/no-mistakes/reference/repo-config/) publishes
 the run's test evidence and never the conversation. The only published copy is
-the bounded rendering in the PR body, which goes through the home-path redaction
-every published body does. Publishing the raw files instead would put the full
+the bounded rendering in the pipeline-owned validation comment, which goes
+through the same home-path redaction as the description. Publishing the raw
+files instead would put the full
 question text, the full answer text and who answered on an orphan branch
 verbatim and permanently, with neither of those protections.
 
@@ -402,8 +403,8 @@ be read back against the claim that removed it.
 
 *May the reviewer ASK?* is keyed on the setting alone. With it off the review
 prompt carries no question protocol, no settled-questions section, no files are
-created, and the PR body publishes what it published before the feature existed.
-A repository that never opted in is byte-for-byte upstream.
+created, and the validation comment carries no conversation group. A repository
+that never opted in sees no conversation behavior.
 
 *May a conversation that already EXISTS be read and answered?* is keyed on the
 files being on disk. The setting is trusted-default-branch-only and is

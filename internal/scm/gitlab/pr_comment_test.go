@@ -13,7 +13,7 @@ func TestManagedMergeRequestCommentTransport(t *testing.T) {
 	body := "validation body"
 	host := New(gitlabTestCmdFactory(map[string]gitlabTestResponse{
 		"glab api --hostname gitlab.example.com --paginate projects/group%2Fproject/merge_requests/7/notes?per_page=100": {
-			stdout: `[{"id":11,"body":"old","noteable_iid":7,"system":false}]`,
+			stdout: `[{"id":10,"body":"changed title","noteable_iid":7,"system":true},{"id":11,"body":"old","noteable_iid":7,"system":false}]`,
 		},
 		"glab api --hostname gitlab.example.com --method POST projects/group%2Fproject/merge_requests/7/notes --input -": {
 			stdout: `{"id":12,"body":"validation body","noteable_iid":7,"system":false}`,

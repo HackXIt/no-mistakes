@@ -383,11 +383,13 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 		t.Fatal(err)
 	}
 	logFile := filepath.Join(t.TempDir(), "gh.log")
+	commentFile := filepath.Join(t.TempDir(), "pr-comments.json")
 	f.sctx.Repo.UpstreamURL = "https://github.com/test/repo.git"
 	env := fakeCIGH(t, "OPEN", `[{"name":"test","state":"FAILURE","bucket":"fail"}]`)
 	f.sctx.Env = append(env,
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
+		"FAKE_CLI_PR_COMMENT_FILE="+commentFile,
 		"FAKE_CLI_PR_TITLE=fix: ci",
 		"FAKE_CLI_LOG="+logFile,
 	)
@@ -415,6 +417,16 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	}
 	if got, out := runVerifyPy(t, original, newHead); got != "failure" {
 		t.Fatalf("the pre-repair attestation must fail at the new head, got %s\n%s", got, out)
+	}
+	var comments []struct {
+		Body *string `json:"body"`
+	}
+	data, err := os.ReadFile(commentFile)
+	if err != nil || json.Unmarshal(data, &comments) != nil || len(comments) != 1 || comments[0].Body == nil {
+		t.Fatalf("read refreshed validation comment: err=%v data=%s", err, data)
+	}
+	if !strings.Contains(*comments[0].Body, validationCommentHeadLabel+": `"+newHead+"`") || strings.Contains(*comments[0].Body, pipelineAttestationCommentPrefix) {
+		t.Fatalf("CI repair validation comment was not refreshed for the new head:\n%s", *comments[0].Body)
 	}
 }
 

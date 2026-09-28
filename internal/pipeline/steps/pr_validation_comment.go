@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
@@ -16,7 +17,10 @@ const (
 	validationCommentStart     = "<!-- " + validationCommentNamespace + ":v1 sha256="
 	validationCommentEnd       = "<!-- /" + validationCommentNamespace + ":v1 -->"
 	validationCommentHeading   = "## Validation evidence"
+	validationCommentHeadLabel = "Validated head"
 	validationTruncationMarker = "\n\n…(validation evidence truncated)"
+	validationSettlementReads  = 3
+	validationSettlementDelay  = 100 * time.Millisecond
 )
 
 var validationCommentMarkerPattern = regexp.MustCompile(`(?i)<!--\s*/?\s*` + validationCommentNamespace)
@@ -29,23 +33,28 @@ type ownedValidationComment struct {
 // renderValidationComment keeps detailed human evidence out of the concise PR
 // description. The machine attestation remains in the description; removing it
 // here also ensures copied evidence can never look like a second enforcement
-// record to consumers that inspect comments.
+// record to consumers that inspect comments. The ordinary no-mistakes link is
+// retained as human provenance for the Pipeline section.
 func (s *PRStep) renderValidationComment(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
-	pipelineMD, risk, testing := s.buildPipelineSectionFor(sctx, provider, false)
+	steps, rounds, err := loadPRPipelineRecords(sctx)
+	if err != nil {
+		return "", err
+	}
+	pipelineMD, risk, testing := s.buildPipelineSectionFromRecords(sctx, provider, steps, rounds)
 	pipelineMD = stripPipelineAttestation(pipelineMD)
-	inner := joinAppendixSections(risk, testing, pipelineMD)
 	intent := ""
 	if published := publicPRIntent(sctx); published != "" {
 		intent = "## Intent\n\n" + neutralizeAttestationMarkers(published)
 	}
-	content := joinBlocks(validationCommentHeading, intent, inner)
+	head := ""
+	if sctx != nil && sctx.Run != nil && strings.TrimSpace(sctx.Run.HeadSHA) != "" {
+		head = validationCommentHeadLabel + ": `" + strings.TrimSpace(sctx.Run.HeadSHA) + "`"
+	}
 	budget := scm.MaxManagedPRCommentBytes - len(wrapValidationComment(""))
 	if budget <= 0 {
 		return "", fmt.Errorf("managed validation comment budget is invalid")
 	}
-	if len(content) > budget {
-		content = truncatePRBodySections(content, budget, validationTruncationMarker)
-	}
+	content := fitValidationComment(validationCommentHeading, head, intent, risk, testing, pipelineMD, budget)
 	content = safepath.RedactText(content)
 	body := wrapValidationComment(content)
 	if len(body) > scm.MaxManagedPRCommentBytes {
@@ -65,11 +74,75 @@ func (s *PRStep) renderValidationCommentForHead(sctx *pipeline.StepContext, prov
 	return s.renderValidationComment(&copyContext, provider)
 }
 
+func fitValidationComment(heading, head, intent, risk, testing, pipelineMD string, budget int) string {
+	prefix := joinBlocks(heading, head)
+	if strings.TrimSpace(risk) != "" {
+		risk = "## Risk Assessment\n\n" + neutralizeAttestationMarkers(risk)
+	}
+	if strings.TrimSpace(testing) != "" {
+		testing = neutralizeAttestationMarkers(testing)
+	}
+	markerText := strings.TrimSpace(validationTruncationMarker)
+	markerSection := func(title string) string {
+		return title + "\n\n" + markerText
+	}
+	full := func(pipeline string) string {
+		return joinBlocks(prefix, intent, risk, testing, pipeline)
+	}
+	if content := full(pipelineMD); len(content) <= budget {
+		return content
+	}
+
+	// Testing can inline logs and artifacts, so shed it before recorded
+	// pipeline history. Replacing a whole Markdown section keeps details/fences
+	// balanced and makes the omission explicit.
+	if testing != "" {
+		testing = markerSection("## Testing")
+	}
+	if content := full(pipelineMD); len(content) <= budget {
+		return content
+	}
+
+	for {
+		other := joinBlocks(prefix, intent, risk, testing)
+		remaining := budget - len(other)
+		if other != "" && pipelineMD != "" {
+			remaining -= len("\n\n")
+		}
+		if remaining > 0 && pipelineMD != "" {
+			pipeline := truncatePipelineSection(pipelineMD, remaining)
+			if pipeline == "" {
+				pipeline = markerSection("## Pipeline")
+				if len(pipeline) > remaining {
+					pipeline = ""
+				}
+			}
+			if pipeline != "" {
+				if content := joinBlocks(other, pipeline); len(content) <= budget {
+					return content
+				}
+			}
+		} else if len(other) <= budget {
+			return other
+		}
+
+		switch {
+		case intent != "" && !strings.Contains(intent, markerText):
+			intent = markerSection("## Intent")
+		case risk != "" && !strings.Contains(risk, markerText):
+			risk = markerSection("## Risk Assessment")
+		case testing != "" && !strings.Contains(testing, markerText):
+			testing = markerSection("## Testing")
+		default:
+			return truncateTextAtLineBoundary(other, budget, validationTruncationMarker)
+		}
+	}
+}
+
 func stripPipelineAttestation(text string) string {
 	if marker := extractPipelineAttestationMarker(text); marker != "" {
 		text = strings.Replace(text, marker, "", 1)
 	}
-	text = strings.Replace(text, noMistakesPRSignature, "", 1)
 	return strings.TrimSpace(text)
 }
 
@@ -156,7 +229,10 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 	}
 
 	if owned == nil {
-		_, writeErr := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+		created, writeErr := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+		if writeErr == nil && (strings.TrimSpace(created.ID) == "" || created.Body != body) {
+			return fmt.Errorf("create validation comment returned an incomplete settled identity")
+		}
 		if err := verifyValidationComment(sctx, commentsHost, pr, body); err == nil {
 			return nil
 		} else if writeErr != nil {
@@ -179,7 +255,10 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 	if current == nil || current.comment.ID != owned.comment.ID || current.comment.Body != owned.comment.Body {
 		return fmt.Errorf("validation comment changed while preparing update; no write performed")
 	}
-	_, writeErr := commentsHost.UpdatePRComment(sctx.Ctx, pr, owned.comment.ID, body)
+	updated, writeErr := commentsHost.UpdatePRComment(sctx.Ctx, pr, owned.comment.ID, body)
+	if writeErr == nil && (updated.ID != owned.comment.ID || updated.Body != body) {
+		return fmt.Errorf("update validation comment returned a different settled identity")
+	}
 	if err := verifyValidationComment(sctx, commentsHost, pr, body); err == nil {
 		return nil
 	} else if writeErr != nil {
@@ -190,16 +269,30 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 }
 
 func verifyValidationComment(sctx *pipeline.StepContext, host scm.ManagedPRCommentHost, pr *scm.PR, body string) error {
-	comments, err := host.ListPRComments(sctx.Ctx, pr)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < validationSettlementReads; attempt++ {
+		comments, err := host.ListPRComments(sctx.Ctx, pr)
+		if err != nil {
+			lastErr = err
+		} else {
+			owned, err := findOwnedValidationComment(comments)
+			if err != nil {
+				return err
+			}
+			if owned != nil && owned.comment.Body == body {
+				return nil
+			}
+			lastErr = fmt.Errorf("provider did not settle the proposed validation comment")
+		}
+		if attempt+1 < validationSettlementReads {
+			timer := time.NewTimer(validationSettlementDelay)
+			select {
+			case <-sctx.Ctx.Done():
+				timer.Stop()
+				return sctx.Ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	owned, err := findOwnedValidationComment(comments)
-	if err != nil {
-		return err
-	}
-	if owned == nil || owned.comment.Body != body {
-		return fmt.Errorf("provider did not settle the proposed validation comment")
-	}
-	return nil
+	return lastErr
 }

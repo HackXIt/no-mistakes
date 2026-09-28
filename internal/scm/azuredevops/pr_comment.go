@@ -36,7 +36,10 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 			return nil, fmt.Errorf("Azure DevOps PR comment thread was incomplete")
 		}
 		for _, raw := range *thread.Comments {
-			if raw.ParentCommentID != 0 || raw.IsDeleted {
+			// Azure returns provider-generated system/code-change comments in
+			// the same thread collection as ordinary text comments. Only active
+			// root text comments can be the managed validation comment.
+			if raw.ParentCommentID != 0 || raw.IsDeleted || raw.CommentType != 1 {
 				continue
 			}
 			comment, err := normalizeAzureComment(thread.ID, raw, 0, 0)

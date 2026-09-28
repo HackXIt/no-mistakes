@@ -496,27 +496,24 @@ func TestReviewConversationNeverReachesTheEvidenceBranch(t *testing.T) {
 		}
 	}
 
-	// The deliberate, bounded copy IS published - in the PR body the pipeline
-	// actually sent to the forge, inside the Pipeline section as its own group.
+	// The deliberate, bounded copy IS published - in the one managed
+	// validation comment, inside the Pipeline section as its own group.
 	ghLog := filepath.Join(filepath.Dir(h.AgentLog), "gh-evidence.log")
-	prBody := ""
-	for _, inv := range readGHStubInvocations(t, ghLog) {
-		if len(inv.Args) >= 2 && inv.Args[0] == "pr" && inv.Args[1] == "create" && inv.Body != "" {
-			prBody = inv.Body
-		}
-	}
-	if prBody == "" {
-		t.Fatal("no PR body was sent to the forge")
-	}
-	t.Logf("review conversation as published in the PR body:\n%s", prConversationSection(prBody))
+	invocations := readGHStubInvocations(t, ghLog)
+	prBody := createdPRBody(t, invocations)
+	validationComment := validationCommentAfterPRCreate(t, invocations)
+	t.Logf("review conversation as published in the validation comment:\n%s", prConversationSection(validationComment))
 	for _, want := range []string{
 		"### Review conversation",
 		conversationQuestionText,
 		conversationAnswerText,
 		conversationAnsweredBy,
 	} {
-		if !strings.Contains(prBody, want) {
-			t.Errorf("PR body does not record %q:\n%s", want, prBody)
+		if !strings.Contains(validationComment, want) {
+			t.Errorf("validation comment does not record %q:\n%s", want, validationComment)
+		}
+		if strings.Contains(prBody, want) {
+			t.Errorf("concise PR description leaked review-conversation detail %q:\n%s", want, prBody)
 		}
 	}
 
@@ -528,8 +525,8 @@ func TestReviewConversationNeverReachesTheEvidenceBranch(t *testing.T) {
 	}
 }
 
-// prConversationSection returns the PR body's review-conversation group, for a
-// reviewer reading the test log.
+// prConversationSection returns the validation comment's review-conversation
+// group, for a reviewer reading the test log.
 func prConversationSection(body string) string {
 	i := strings.Index(body, "### Review conversation")
 	if i < 0 {

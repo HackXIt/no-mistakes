@@ -17,7 +17,7 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/2.0/repositories/owner/repo/pullrequests/7/comments":
-			fmt.Fprint(w, `{"values":[{"id":11,"content":{"raw":"old"}}]}`)
+			fmt.Fprint(w, `{"values":[{"id":10,"deleted":true},{"id":11,"content":{"raw":"old"}}]}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/2.0/repositories/owner/repo/pullrequests/7/comments":
 			var payload map[string]map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&payload)
@@ -48,5 +48,27 @@ func TestManagedPRCommentTransport(t *testing.T) {
 	updated, err := host.UpdatePRComment(context.Background(), pr, "11", body)
 	if err != nil || updated.ID != "11" || updated.Body != body {
 		t.Fatalf("UpdatePRComment() = %+v, %v", updated, err)
+	}
+}
+
+func TestManagedPRCommentTransportRejectsPaginationCycle(t *testing.T) {
+	t.Parallel()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next := server.URL + "/2.0/repositories/owner/repo/pullrequests/7/comments?pagelen=100"
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"values": []any{},
+			"next":   next,
+		})
+	}))
+	defer server.Close()
+	client, err := NewClientFromEnv([]string{envEmail + "=e", envToken + "=t", envAPIBaseURL + "=" + server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := NewHost(client, RepoRef{Workspace: "owner", RepoSlug: "repo"}, false)
+	_, err = host.ListPRComments(context.Background(), &scm.PR{Number: "7", URL: "https://bitbucket.org/owner/repo/pull-requests/7"})
+	if err == nil {
+		t.Fatal("cyclic Bitbucket comment pagination was accepted")
 	}
 }
