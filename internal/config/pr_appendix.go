@@ -4,13 +4,13 @@ import "fmt"
 
 const (
 	// PRAppendixFull publishes Intent (when enabled), Risk Assessment, Testing,
-	// and Pipeline as separate sections. It is the default.
+	// and Pipeline as separate validation-comment sections. It is the default.
 	PRAppendixFull = "full"
 	// PRAppendixCollapsed folds Risk Assessment, Testing, and Pipeline into one
-	// closed Validation details block. Intent stays outside that block.
+	// closed validation-comment details block. Intent stays outside that block.
 	PRAppendixCollapsed = "collapsed"
-	// PRAppendixMinimal publishes a one-line risk level and the pipeline
-	// attestation, and omits Testing and Pipeline prose.
+	// PRAppendixMinimal publishes a one-line risk level in the validation
+	// comment and omits Testing and Pipeline prose; the description retains the attestation.
 	PRAppendixMinimal = "minimal"
 )
 

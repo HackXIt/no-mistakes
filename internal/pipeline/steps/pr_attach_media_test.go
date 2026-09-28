@@ -118,6 +118,23 @@ func TestPRStep_DefaultConfigEmbedsGitHubScreenshotAttachment(t *testing.T) {
 	}
 }
 
+func TestPRStep_MinimalAppendixDoesNotPublishOrUploadScreenshotEvidence(t *testing.T) {
+	t.Parallel()
+	uploader := &stubMediaUploader{t: t, urls: map[string]string{"checkout.png": testAttachmentURL}}
+	body, _ := renderPRWithScreenshot(t, uploader, func(ctx *testPRAttachCtx) {
+		ctx.provider = scm.ProviderGitHub
+		ctx.Config.PR.Appendix = config.PRAppendixMinimal
+	})
+	if len(uploader.calls) != 0 {
+		t.Fatalf("minimal publication uploaded evidence: %v", uploader.calls)
+	}
+	for _, disclosed := range []string{"Checkout screenshot", "checkout.png", testAttachmentURL, "## Testing", "## Pipeline"} {
+		if strings.Contains(body, disclosed) {
+			t.Fatalf("minimal publication disclosed %q:\n%s", disclosed, body)
+		}
+	}
+}
+
 func TestPRStep_ReusesScreenshotAttachmentAcrossPRRenders(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := setupGitRepo(t)

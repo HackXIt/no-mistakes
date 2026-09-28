@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/conventional"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/git"
@@ -716,6 +717,9 @@ func (s *PRStep) buildPipelineSectionFromRecords(sctx *pipeline.StepContext, pro
 		policy.AllowTestCommandOverride = strings.TrimSpace(sctx.Config.Test.AllowApproveOverFailure)
 	}
 	pipelineMD, riskLine = buildPipelineSummaryFor(steps, rounds, sctx.Run.HeadSHA, provider, policy)
+	if appendixMode(sctx) == config.PRAppendixMinimal {
+		return "", riskLine, ""
+	}
 	// The review conversation rides inside the Pipeline section as an ordinary
 	// `### ` group, so the comment-budget logic can drop it as a unit.
 	if conversationMD := buildReviewConversationSection(sctx); conversationMD != "" && pipelineMD != "" {

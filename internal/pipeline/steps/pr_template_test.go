@@ -208,9 +208,41 @@ func TestPRAppendixModes_TemplatePublication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"## Intent", "Keep the template as the visible body.", "## Risk Assessment", "⚠️ Medium: touches publication", "## Testing", "evidence log line", "## Pipeline"} {
+			for _, want := range []string{"## Intent", "Keep the template as the visible body.", "⚠️ Medium: touches publication"} {
 				if !strings.Contains(comment, want) {
-					t.Fatalf("detailed validation comment missing %q in %s mode:\n%s", want, mode, comment)
+					t.Fatalf("validation comment missing %q in %s mode:\n%s", want, mode, comment)
+				}
+			}
+			switch mode {
+			case config.PRAppendixFull:
+				for _, want := range []string{"## Risk Assessment", "## Testing", "evidence log line", "## Pipeline"} {
+					if !strings.Contains(comment, want) {
+						t.Fatalf("full validation comment missing %q:\n%s", want, comment)
+					}
+				}
+				if strings.Contains(comment, "<summary>Validation</summary>") {
+					t.Fatalf("full validation comment was collapsed:\n%s", comment)
+				}
+			case config.PRAppendixCollapsed:
+				open := strings.Index(comment, validationDetailsOpen)
+				if open < 0 || strings.Contains(comment, "<details open") || !strings.Contains(comment, "evidence log line") || !strings.Contains(comment, "## Pipeline") {
+					t.Fatalf("collapsed validation comment lost its closed evidence fold:\n%s", comment)
+				}
+				if strings.Index(comment, "## Intent") > open || strings.Index(comment, "evidence log line") < open {
+					t.Fatalf("collapsed validation comment hid intent or exposed evidence:\n%s", comment)
+				}
+				bitbucket, err := step.renderValidationComment(sctx, scm.ProviderBitbucket)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(bitbucket, "<summary>Validation</summary>") || !strings.Contains(bitbucket, "evidence log line") || !strings.Contains(bitbucket, "## Pipeline") {
+					t.Fatalf("Bitbucket collapsed mode did not retain the full fallback:\n%s", bitbucket)
+				}
+			case config.PRAppendixMinimal:
+				for _, banned := range []string{"## Risk Assessment", "## Testing", "evidence log line", "## Pipeline", "<summary>Validation</summary>"} {
+					if strings.Contains(comment, banned) {
+						t.Fatalf("minimal validation comment published %q:\n%s", banned, comment)
+					}
 				}
 			}
 		})

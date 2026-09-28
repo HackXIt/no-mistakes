@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
+	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
@@ -452,8 +453,8 @@ func assertSupersedeSection(t *testing.T, conversation bool) {
 	}
 }
 
-// TestBuildReviewConversationSection covers item 9: the PR body records what
-// was asked, what was answered, and by whom.
+// TestBuildReviewConversationSection covers item 9: detailed validation records
+// what was asked, what was answered, and by whom.
 func TestBuildReviewConversationSection(t *testing.T) {
 	dir, baseSHA, headSHA := setupGitRepo(t)
 	sctx := withReviewConversation(newTestContextWithDBRecords(t, newStaticReviewAgent(cleanReviewJSON), dir, baseSHA, headSHA, config.Commands{}))
@@ -509,6 +510,17 @@ func TestBuildReviewConversationSection(t *testing.T) {
 	// withdrawn record first.
 	if strings.Index(section, "**Unanswered:**") > strings.Index(section, "**Withdrawn by the reviewer:**") {
 		t.Fatalf("unanswered questions must be listed before withdrawn ones:\n%s", section)
+	}
+
+	sctx.Config.PR.Appendix = config.PRAppendixMinimal
+	comment, err := (&PRStep{}).renderValidationComment(sctx, scm.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"### Review conversation", "Should the legacy route keep answering?", "is widening this scope intended?"} {
+		if strings.Contains(comment, private) {
+			t.Fatalf("minimal validation comment published review conversation text %q:\n%s", private, comment)
+		}
 	}
 }
 

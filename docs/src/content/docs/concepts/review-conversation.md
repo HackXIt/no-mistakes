@@ -72,10 +72,12 @@ The conversation stays LOCAL to the run. The files live in the run's evidence
 directory, but the conversation directory is excluded from the evidence-branch
 publication walk, so opting into
 [`test.evidence.store_in_repo`](/no-mistakes/reference/repo-config/) publishes
-the run's test evidence and never the conversation. The only published copy is
-the bounded rendering in the pipeline-owned validation comment, which goes
-through the same home-path redaction as the description. Publishing the raw
-files instead would put the full
+the run's test evidence and never the conversation. When trusted
+[`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) is `full` or
+`collapsed`, the only published copy is the bounded rendering in the
+pipeline-owned validation comment, which goes through the same home-path
+redaction as the description. `minimal` publishes no conversation copy.
+Publishing the raw files instead would put the full
 question text, the full answer text and who answered on an orphan branch
 verbatim and permanently, with neither of those protections.
 
@@ -504,10 +506,12 @@ and must not become one.
 
 ## The validation comment
 
-The pipeline-owned validation comment records the conversation alongside the
-existing decision and deferred lists: each question asked, its answer, and who
-answered it. A
-retracted question is listed as withdrawn.
+With trusted
+[`pr.appendix`](/no-mistakes/reference/repo-config/#prappendix) set to `full` or
+`collapsed`, the pipeline-owned validation comment records the conversation
+alongside the existing decision and deferred lists: each question asked, its
+answer, and who answered it. A retracted question is listed as withdrawn.
+`minimal` omits the conversation entirely.
 
 A question can also be published as **unanswered**. The review step never
 completes on its own while one is open, but a human may approve the gate over
