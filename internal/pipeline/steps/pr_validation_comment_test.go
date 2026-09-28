@@ -200,6 +200,41 @@ func TestPublishValidationCommentRecoversEveryPendingCreateBoundary(t *testing.T
 	}
 }
 
+func TestPublishValidationCommentSettlesOldPendingBodyBeforeCurrentUpdate(t *testing.T) {
+	for _, remoteCreated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before create", true: "after create"}[remoteCreated], func(t *testing.T) {
+			url := "https://github.com/test/repo/pull/42"
+			pr := &scm.PR{Number: "42", URL: url}
+			sctx := managedCommentContext(t, url)
+			host := &managedCommentTestHost{}
+			oldBody := wrapValidationComment("old validation")
+			pending, err := pendingValidationComment(sctx, host, pr, "42", "bot-1", oldBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sctx.DB.BeginManagedPRCommentCreate(pending); err != nil {
+				t.Fatal(err)
+			}
+			if remoteCreated {
+				host.comments = []scm.PRComment{{ID: "7", Body: oldBody, Principal: "bot-1"}}
+				host.hiddenListCalls = map[int]bool{1: true}
+			}
+			sctx.Run.HeadSHA = "head-2"
+			newBody := wrapValidationComment("new validation")
+			if err := publishValidationComment(sctx, host, pr, newBody); err != nil {
+				t.Fatal(err)
+			}
+			wantCreates := 1
+			if remoteCreated {
+				wantCreates = 0
+			}
+			if host.creates != wantCreates || host.updates != 1 || len(host.comments) != 1 || host.comments[0].Body != newBody {
+				t.Fatalf("remoteCreated=%v creates=%d updates=%d comments=%+v", remoteCreated, host.creates, host.updates, host.comments)
+			}
+		})
+	}
+}
+
 func TestPublishValidationCommentRecoveryRequiresOnePrincipalMatch(t *testing.T) {
 	url := "https://github.com/test/repo/pull/42"
 	pr := &scm.PR{Number: "42", URL: url}
@@ -533,7 +568,7 @@ func TestFitValidationCommentKeepsMarkdownBalancedWithinBudget(t *testing.T) {
 func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	legacyText := "## What Changed\n\nHuman-adjusted summary.\n\n## Testing\n\nHuman note.\n\n"
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	legacy := legacyText + "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nRecorded history.\n\n</details>"
+	legacy := legacyText + "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nRecorded history.\n\n</details>"
 	parts, err := parseOrMigratePROwnedBody(legacy)
 	if err != nil {
 		t.Fatal(err)
@@ -551,6 +586,29 @@ func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	}
 }
 
+func TestLegacyGeneratedDescriptionMigrationAcceptsFormerStepSummaries(t *testing.T) {
+	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
+	summaries := []string{
+		"⏳ **CI** - pending",
+		"⏸️ **Review** - awaiting approval",
+		"🔄 **Review** - auto-fixing",
+		"❌ **Test** - failed",
+		"⏭️ **Document** - skipped",
+		"⚠️ **Review** - findings unavailable",
+		"⚠️ **Review** - medium risk",
+		"🚨 **Review** - high risk",
+		"⚠️ **Review** - 3 issues (1 error, 2 warnings)",
+		"🔧 **Review** - 3 issues found → auto-fixed (2) ✅",
+		"✅ **Lint** - passed",
+	}
+	for _, summary := range summaries {
+		body := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>" + summary + "</summary>\n\nRecorded history.\n</details>"
+		if _, err := parseOrMigratePROwnedBody(body); err != nil {
+			t.Errorf("former summary %q was rejected: %v", summary, err)
+		}
+	}
+}
+
 func TestLegacyMinimalDescriptionMigrationPreservesNarrativeAndRisk(t *testing.T) {
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
 	legacy := "Concise narrative.\n\n⚠️ Medium: publication changed\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker
@@ -565,7 +623,7 @@ func TestLegacyMinimalDescriptionMigrationPreservesNarrativeAndRisk(t *testing.T
 
 func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t *testing.T) {
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nRecorded history.\n\n</details>"
+	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nRecorded history.\n\n</details>"
 	quoted := "> " + strings.ReplaceAll(footer, "\n", "\n> ")
 	minimal := noMistakesPRSignature + "\n\n" + legacyMarker
 	cases := map[string]string{
@@ -575,7 +633,9 @@ func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t
 		"nontrailing footer":        footer + "\n\n## Human notes\n\nKeep this marker as quoted history.",
 		"plain suffix":              "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\nQuoted context.",
 		"suffix after details":      footer + "\n\nQuoted context.",
-		"malformed details":         "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Review</summary>\n\nQuoted context.",
+		"malformed details":         "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nQuoted context.",
+		"author archive details":    "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Author archive</summary>\n\nQuoted context.\n</details>",
+		"invented status details":   "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - archived</summary>\n\nQuoted context.\n</details>",
 		"fenced minimal":            "```text\n" + minimal + "\n```",
 		"embedded minimal":          "Author archive:\n\n" + minimal + "\n\nHuman suffix.",
 		"duplicated minimal marker": minimal + "\n\n" + minimal,

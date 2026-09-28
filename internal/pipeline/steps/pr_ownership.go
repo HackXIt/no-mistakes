@@ -24,6 +24,8 @@ var (
 	prOwnershipAttrsPattern           = regexp.MustCompile(`^ narrative_sha256=([0-9a-f]{64}|-) title_sha256=([0-9a-f]{64}|-)$`)
 	legacyPipelineOmissionPattern     = regexp.MustCompile(`^_\.\.\. \([1-9][0-9]* earlier update rounds? omitted to keep the PR body within GitHub's 65536-char limit; full history is in the run log\.\)_`)
 	legacyConversationOmissionPattern = regexp.MustCompile(`^[1-9][0-9]* further review question\(s\) omitted for length\.$`)
+	legacyFindingSummaryPattern       = regexp.MustCompile(`^[1-9][0-9]* (?:errors?|warnings?|infos?|issues?)(?: \((?:[1-9][0-9]* (?:errors?|warnings?|infos?))(?:, [1-9][0-9]* (?:errors?|warnings?|infos?))*\))?$`)
+	legacyFixSummaryPattern           = regexp.MustCompile(`^[1-9][0-9]* issues? found(?: → (?:auto-fixed|no changes applied|fix attempted; result not reported)(?: \((?:[2-9]|[1-9][0-9]+)\))?)* ✅$`)
 )
 
 func hasPRAppendixMarkers(body string) bool {
@@ -228,6 +230,42 @@ func canonicalLegacyReviewConversation(section string) bool {
 	return entries > 0
 }
 
+func canonicalLegacyStepSummary(summary string) bool {
+	separator := strings.Index(summary, " **")
+	if separator <= 0 {
+		return false
+	}
+	emoji := summary[:separator]
+	rest := summary[separator+len(" **"):]
+	nameEnd := strings.Index(rest, "** - ")
+	if nameEnd <= 0 || strings.ContainsAny(rest[:nameEnd], "*\r\n") {
+		return false
+	}
+	outcome := rest[nameEnd+len("** - "):]
+	switch emoji {
+	case "⏳":
+		return outcome == "pending" || outcome == "running"
+	case "⏸️":
+		return outcome == "awaiting approval" || outcome == "review fix"
+	case "🔄":
+		return outcome == "auto-fixing"
+	case "❌":
+		return outcome == "failed"
+	case "⏭️":
+		return outcome == "skipped"
+	case "✅":
+		return outcome == "passed"
+	case "🚨":
+		return outcome == "high risk"
+	case "⚠️":
+		return outcome == "findings unavailable" || outcome == "medium risk" || legacyFindingSummaryPattern.MatchString(outcome)
+	case "🔧":
+		return legacyFixSummaryPattern.MatchString(outcome)
+	default:
+		return false
+	}
+}
+
 func canonicalLegacyPipelineSuffix(suffix string) bool {
 	if suffix == "" || suffix == "\n\n" {
 		return true
@@ -251,8 +289,9 @@ func canonicalLegacyPipelineSuffix(suffix string) bool {
 
 	details := 0
 	for strings.HasPrefix(rest, "<details>\n<summary>") {
+		summaryStart := len("<details>\n<summary>")
 		summaryEnd := strings.Index(rest, "</summary>\n\n")
-		if summaryEnd < len("<details>\n<summary>") {
+		if summaryEnd < summaryStart || !canonicalLegacyStepSummary(rest[summaryStart:summaryEnd]) {
 			return false
 		}
 		contentStart := summaryEnd + len("</summary>\n\n")

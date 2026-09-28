@@ -442,16 +442,16 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		if err != nil {
 			return fmt.Errorf("resolve authenticated comment principal: %w", err)
 		}
-		expected, err := pendingValidationComment(sctx, host, pr, prNumber, principal, body)
-		if err != nil {
-			return err
-		}
-		pending, err := sctx.DB.GetPendingManagedPRComment(expected.RepoID, expected.Provider, expected.PRNumber)
+		pending, err := sctx.DB.GetPendingManagedPRComment(sctx.Run.RepoID, string(host.Provider()), prNumber)
 		if err != nil {
 			return err
 		}
 		resumingPending := pending != nil
 		if pending == nil {
+			expected, err := pendingValidationComment(sctx, host, pr, prNumber, principal, body)
+			if err != nil {
+				return err
+			}
 			if err := refuseUnboundValidationMarkers(comments); err != nil {
 				return err
 			}
@@ -459,8 +459,8 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 				return err
 			}
 			pending = &expected
-		} else if pending.PRURL != expected.PRURL || pending.HeadSHA != expected.HeadSHA || pending.Principal != expected.Principal || pending.MarkerDigest != expected.MarkerDigest || pending.PayloadDigest != expected.PayloadDigest || pending.Body != expected.Body {
-			return fmt.Errorf("pending validation comment create intent does not match this publication")
+		} else if pending.PRURL != pr.URL || pending.Principal != strings.TrimSpace(principal) {
+			return fmt.Errorf("pending validation comment create intent belongs to a different pull request or principal")
 		}
 
 		recovered, err := recoverPendingValidationComment(comments, *pending)
@@ -474,14 +474,14 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 			}
 		}
 		if recovered == nil {
-			created, createErr := commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+			created, createErr := commentsHost.CreatePRComment(sctx.Ctx, pr, pending.Body)
 			if createErr != nil {
 				recovered, err = recheckPendingValidationComment(sctx, commentsHost, pr, *pending)
 				if err != nil {
 					return fmt.Errorf("create validation comment: %w (recheck: %v)", createErr, err)
 				}
 				if recovered == nil {
-					created, err = commentsHost.CreatePRComment(sctx.Ctx, pr, body)
+					created, err = commentsHost.CreatePRComment(sctx.Ctx, pr, pending.Body)
 					if err != nil {
 						return fmt.Errorf("create validation comment after bounded recheck: %w (initial create: %v)", err, createErr)
 					}
@@ -497,10 +497,23 @@ func publishValidationComment(sctx *pipeline.StepContext, host scm.Host, pr *scm
 		if err := sctx.DB.CompleteManagedPRCommentCreate(*pending, recovered.comment.ID); err != nil {
 			return err
 		}
-		if err := verifyValidationComment(sctx, commentsHost, pr, recovered.comment.ID, body); err != nil {
+		if err := verifyValidationComment(sctx, commentsHost, pr, recovered.comment.ID, pending.Body); err != nil {
 			return fmt.Errorf("verify created validation comment: %w", err)
 		}
-		return nil
+		if pending.Body == body {
+			return nil
+		}
+		binding, _, err = managedValidationCommentBinding(sctx, host, pr)
+		if err != nil {
+			return err
+		}
+		if binding == nil {
+			return fmt.Errorf("settled validation comment has no persisted provider identity")
+		}
+		comments, err = commentsHost.ListPRComments(sctx.Ctx, pr)
+		if err != nil {
+			return fmt.Errorf("re-list validation comments after pending settlement: %w", err)
+		}
 	}
 
 	owned, err := findBoundValidationComment(comments, binding.CommentID)
