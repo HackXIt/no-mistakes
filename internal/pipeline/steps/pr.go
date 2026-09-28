@@ -116,7 +116,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 	if err != nil {
 		return nil, err
 	}
-	existing, err = bindExistingPR(sctx, host, existing)
+	existing, replaceStaleIdentity, err := bindExistingPR(sctx, host, existing)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +129,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		if err != nil {
 			return nil, fmt.Errorf("read existing PR before publication: %w", err)
 		}
-		if err := persistRunPRURL(sctx, existing.URL); err != nil {
+		if err := persistRunPRURL(sctx, existing.URL, replaceStaleIdentity); err != nil {
 			return nil, err
 		}
 		sctx.Log(fmt.Sprintf("pull request already exists: %s, updating...", describePR(existing)))
@@ -194,7 +194,7 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, fmt.Errorf("PR create returned no readable review-object identity")
 	}
 	sctx.Log(fmt.Sprintf("created pull request: %s", created.URL))
-	if err := persistRunPRURL(sctx, created.URL); err != nil {
+	if err := persistRunPRURL(sctx, created.URL, replaceStaleIdentity); err != nil {
 		return nil, err
 	}
 	if template != "" {
@@ -261,13 +261,13 @@ func retargetExistingPRIfNeeded(sctx *pipeline.StepContext, host scm.Host, exist
 // or merged persisted PR is stale: title/body update the discovered PR, and
 // a per-run --base-branch retarget is refused rather than moving either
 // object. First-attach (no persisted URL) keeps the discovered PR.
-func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, error) {
+func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.PR) (*scm.PR, bool, error) {
 	owned := runPRURL(sctx)
 	if owned == "" {
-		return discovered, nil
+		return discovered, false, nil
 	}
 	if host == nil {
-		return nil, fmt.Errorf("read persisted pull request %s state: host unavailable", owned)
+		return nil, false, fmt.Errorf("read persisted pull request %s state: host unavailable", owned)
 	}
 	ownedPR := discovered
 	if !samePRIdentity(owned, discovered) {
@@ -279,13 +279,13 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 	}
 	state, err := host.GetPRState(ctx, ownedPR)
 	if err != nil {
-		return nil, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
+		return nil, false, fmt.Errorf("read persisted pull request %s state: %w", owned, err)
 	}
 	if state != scm.PRStateOpen {
 		if runPRBaseBranch(sctx) != "" {
-			return nil, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
+			return nil, false, fmt.Errorf("persisted pull request %s is stale (%s); refusing to retarget another pull request", owned, strings.ToLower(string(state)))
 		}
-		return discovered, nil
+		return discovered, true, nil
 	}
 	existing := discovered
 	if !samePRIdentity(owned, discovered) {
@@ -295,18 +295,18 @@ func bindExistingPR(sctx *pipeline.StepContext, host scm.Host, discovered *scm.P
 		}
 	}
 	if strings.TrimSpace(existing.BaseBranch) != "" {
-		return existing, nil
+		return existing, false, nil
 	}
 	reader, ok := host.(scm.PRBaseBranchReader)
 	if !ok {
-		return existing, nil
+		return existing, false, nil
 	}
 	base, err := reader.GetPRBaseBranch(ctx, existing)
 	if err != nil {
-		return nil, fmt.Errorf("read persisted pull request %s: %w", owned, err)
+		return nil, false, fmt.Errorf("read persisted pull request %s: %w", owned, err)
 	}
 	existing.BaseBranch = strings.TrimSpace(base)
-	return existing, nil
+	return existing, false, nil
 }
 
 func prFromOwnedURL(owned string) *scm.PR {
@@ -343,12 +343,12 @@ func runPRURL(sctx *pipeline.StepContext) string {
 // persistRunPRURL establishes the sole review-object identity before either
 // publication surface is mutated. The managed comment must never be selected
 // from a branch lookup while the durable run still names a sibling PR.
-func persistRunPRURL(sctx *pipeline.StepContext, raw string) error {
+func persistRunPRURL(sctx *pipeline.StepContext, raw string, replaceStaleIdentity bool) error {
 	raw = strings.TrimSpace(raw)
 	if sctx == nil || sctx.Run == nil || raw == "" {
 		return fmt.Errorf("cannot persist an empty pull request identity")
 	}
-	if owned := runPRURL(sctx); owned != "" && !strings.EqualFold(strings.TrimRight(owned, "/"), strings.TrimRight(raw, "/")) {
+	if owned := runPRURL(sctx); owned != "" && !strings.EqualFold(strings.TrimRight(owned, "/"), strings.TrimRight(raw, "/")) && !replaceStaleIdentity {
 		return fmt.Errorf("refusing to replace persisted pull request %s with sibling %s", owned, raw)
 	}
 	if err := sctx.DB.UpdateRunPRURL(sctx.Run.ID, raw); err != nil {

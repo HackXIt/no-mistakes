@@ -819,12 +819,15 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if err != nil {
 		return fmt.Errorf("%w: find pull request: %v", errAttestationWriteFailed, err)
 	}
-	pr, err := bindExistingPR(sctx, host, discovered)
+	pr, replaceStaleIdentity, err := bindExistingPR(sctx, host, discovered)
 	if err != nil {
 		return fmt.Errorf("%w: resolve pull request: %v", errAttestationWriteFailed, err)
 	}
 	if pr == nil {
 		return nil
+	}
+	if err := persistRunPRURL(sctx, pr.URL, replaceStaleIdentity); err != nil {
+		return fmt.Errorf("%w: persist pull request identity: %v", errAttestationWriteFailed, err)
 	}
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)

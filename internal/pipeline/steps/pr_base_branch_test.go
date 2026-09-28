@@ -265,6 +265,41 @@ func TestPRStep_PrefersPersistedPRWhenFindPRReturnsSibling(t *testing.T) {
 	}
 }
 
+func TestPRStep_RebindsStalePersistedIdentityToDiscoveredPR(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := setupGitRepo(t)
+	env, logFile := fakeGH(t, "https://github.com/test/repo/pull/99")
+	env = append(env, "FAKE_CLI_PR_STATE=CLOSED")
+
+	sctx := newTestContextWithDBRecords(t, &mockAgent{name: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	owned := "https://github.com/test/repo/pull/42"
+	sctx.Run.PRURL = &owned
+
+	if _, err := (&PRStep{}).Execute(sctx); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := "https://github.com/test/repo/pull/99"
+	if sctx.Run.PRURL == nil || *sctx.Run.PRURL != replacement {
+		t.Fatalf("in-memory PR identity = %v, want %s", sctx.Run.PRURL, replacement)
+	}
+	persisted, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.PRURL == nil || *persisted.PRURL != replacement {
+		t.Fatalf("persisted PR identity = %v, want %s", persisted.PRURL, replacement)
+	}
+	logData, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logData), "pr edit 99") || strings.Contains(string(logData), "pr edit 42") {
+		t.Fatalf("stale identity was not replaced before publication:\n%s", logData)
+	}
+}
+
 func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
 	t.Parallel()
 	owned := "https://github.com/test/repo/pull/42"
@@ -272,9 +307,12 @@ func TestBindExistingPR_PrefersPersistedURLOverSibling(t *testing.T) {
 	sibling := &scm.PR{Number: "99", URL: "https://github.com/test/repo/pull/99", BaseBranch: "develop"}
 	host := &recordingRetargetHost{state: scm.PRStateOpen}
 
-	got, err := bindExistingPR(sctx, host, sibling)
+	got, replaceStaleIdentity, err := bindExistingPR(sctx, host, sibling)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if replaceStaleIdentity {
+		t.Fatal("open persisted identity was authorized for replacement")
 	}
 	if got == nil || !samePRIdentity(owned, got) {
 		t.Fatalf("bindExistingPR = %+v, want persisted %s", got, owned)
@@ -303,7 +341,7 @@ func TestPRStep_StaleIdentityRefusesRetargetOfEitherPR(t *testing.T) {
 				BaseBranch: "develop",
 			}
 
-			bound, err := bindExistingPR(sctx, host, discovered)
+			bound, _, err := bindExistingPR(sctx, host, discovered)
 			if err == nil {
 				t.Fatal("expected stale identity to refuse retarget")
 			}

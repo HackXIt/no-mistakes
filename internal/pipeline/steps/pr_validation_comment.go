@@ -75,6 +75,12 @@ func (s *PRStep) renderValidationCommentForHead(sctx *pipeline.StepContext, prov
 }
 
 func fitValidationComment(heading, head, intent, risk, testing, pipelineMD string, budget int) string {
+	heading = neutralizeValidationCommentMarkers(heading)
+	head = neutralizeValidationCommentMarkers(head)
+	intent = neutralizeValidationCommentMarkers(intent)
+	risk = neutralizeValidationCommentMarkers(risk)
+	testing = neutralizeValidationCommentMarkers(testing)
+	pipelineMD = neutralizeValidationCommentMarkers(pipelineMD)
 	prefix := joinBlocks(heading, head)
 	if strings.TrimSpace(risk) != "" {
 		risk = "## Risk Assessment\n\n" + neutralizeAttestationMarkers(risk)
@@ -147,7 +153,14 @@ func stripPipelineAttestation(text string) string {
 }
 
 func wrapValidationComment(content string) string {
+	content = neutralizeValidationCommentMarkers(content)
 	return fmt.Sprintf("%s%x -->\n%s\n%s", validationCommentStart, sha256.Sum256([]byte(content)), content, validationCommentEnd)
+}
+
+func neutralizeValidationCommentMarkers(content string) string {
+	return validationCommentMarkerPattern.ReplaceAllStringFunc(content, func(marker string) string {
+		return strings.Replace(marker, "<!--", "<!\\--", 1)
+	})
 }
 
 func parseValidationComment(comment scm.PRComment) (ownedValidationComment, bool, error) {

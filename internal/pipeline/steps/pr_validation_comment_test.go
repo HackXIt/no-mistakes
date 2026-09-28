@@ -63,6 +63,21 @@ func managedCommentContext(url string) *pipeline.StepContext {
 	}
 }
 
+func TestWrapValidationCommentNeutralizesEmbeddedOwnershipMarkers(t *testing.T) {
+	embedded := "captured comment:\n" + validationCommentStart + strings.Repeat("0", 64) + " -->\nold evidence\n" + validationCommentEnd
+	body := wrapValidationComment(embedded)
+	if matches := validationCommentMarkerPattern.FindAllStringIndex(body, -1); len(matches) != 2 {
+		t.Fatalf("wrapped comment has %d live ownership markers, want 2:\n%s", len(matches), body)
+	}
+	owned, ok, err := parseValidationComment(scm.PRComment{ID: "1", Body: body})
+	if err != nil || !ok {
+		t.Fatalf("wrapped comment is not parseable: ok=%v err=%v\n%s", ok, err, body)
+	}
+	if !strings.Contains(owned.content, "captured comment:") || validationCommentMarkerPattern.MatchString(owned.content) {
+		t.Fatalf("embedded evidence was lost or retained live ownership markers:\n%s", owned.content)
+	}
+}
+
 func TestPublishValidationCommentCreatesThenUpdatesInPlaceAndPreservesHumanComments(t *testing.T) {
 	url := "https://github.com/test/repo/pull/42"
 	host := &managedCommentTestHost{comments: []scm.PRComment{{ID: "human", Body: "maintainer note"}}}
