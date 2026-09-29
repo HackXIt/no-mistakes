@@ -17,6 +17,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
+var errPostPushPublicationUnsettled = errors.New("post-push publication is unsettled")
+
 // PushStep force-pushes the worktree state to the configured push remote.
 type PushStep struct{}
 
@@ -215,7 +217,7 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	if err := refreshValidationCommentAfterPush(sctx, headBeingPushed); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errPostPushPublicationUnsettled, err)
 	}
 
 	if localRefUpdate != "" {

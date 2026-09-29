@@ -455,11 +455,53 @@ func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
 	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(findings.Summary, "attestation is unsettled") {
+	if !strings.Contains(findings.Summary, "publication is unsettled") {
 		t.Fatalf("findings summary = %q, want settlement failure", findings.Summary)
 	}
-	if !strings.Contains(f.log(), "CI repair push is not settled") {
-		t.Fatalf("log did not report unsettled push:\n%s", f.log())
+	if !strings.Contains(f.log(), "CI repair publication is not settled") {
+		t.Fatalf("log did not report unsettled publication:\n%s", f.log())
+	}
+}
+
+func TestCIStep_PostPushCommentFailureParksPublishedRepair(t *testing.T) {
+	f := newCIRepairFixture(t, false, writeCIFix)
+	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
+	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commentFile := filepath.Join(t.TempDir(), "pr-comments.json")
+	if err := os.WriteFile(commentFile, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Env = append(f.sctx.Env,
+		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
+		"FAKE_CLI_PR_COMMENT_FILE="+commentFile,
+		"FAKE_CLI_PR_TITLE=fix: ci",
+	)
+
+	outcome, err := f.run(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("outcome = %#v, want unsettled publication approval gate", outcome)
+	}
+	var findings Findings
+	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(findings.Summary, "publication is unsettled") {
+		t.Fatalf("findings summary = %q, want publication settlement failure", findings.Summary)
+	}
+	newHead := f.localHead(t)
+	if newHead == f.headSHA || f.remoteHead(t) != newHead {
+		t.Fatalf("repair publication did not reach the remote: old=%s local=%s remote=%s", f.headSHA, newHead, f.remoteHead(t))
+	}
+	if f.sctx.Run.HeadSHA != f.headSHA {
+		t.Fatalf("run head = %s, want unsettled durable publication to remain at %s", f.sctx.Run.HeadSHA, f.headSHA)
+	}
+	if !strings.Contains(f.log(), "CI repair publication is not settled") {
+		t.Fatalf("log did not report unsettled publication:\n%s", f.log())
 	}
 }
 

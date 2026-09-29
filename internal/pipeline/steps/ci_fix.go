@@ -17,16 +17,16 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
-var errCIAttestationUnsettled = errors.New("CI repair attestation is unsettled")
+var errCIPublicationUnsettled = errors.New("CI repair publication is unsettled")
 
 // errAttestationWriteFailed marks a failure specifically inside
 // attestHeadBeforePush (PR discovery or the attestation write itself), as
 // opposed to any other publishRunHead failure (review-approved-head
 // continuity, the force-push decision, the git push, remote verification,
 // the gate mirror, or the durable publication write). publishRepair uses
-// errors.Is against this to decide whether to apply the CI-specific
-// errCIAttestationUnsettled treatment; the ordinary Push step just
-// propagates whatever publishRunHead returns.
+// errors.Is against this and errPostPushPublicationUnsettled to decide whether
+// to apply the CI-specific errCIPublicationUnsettled treatment; the ordinary
+// Push step just propagates whatever publishRunHead returns.
 var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 
 // ciFixerClassRules is shared by every CI-repair prompt path so failing-check,
@@ -104,8 +104,8 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
 	}
-	if err != nil && errors.Is(err, errCIAttestationUnsettled) {
-		sctx.Log(fmt.Sprintf("CI repair push is not settled: %v", err))
+	if err != nil && errors.Is(err, errCIPublicationUnsettled) {
+		sctx.Log(fmt.Sprintf("CI repair publication is not settled: %v", err))
 		return ciRepairParkOutcome(targets.Findings, sctx.DeferredFindings, err.Error()), nil
 	}
 	if err != nil {
@@ -752,13 +752,12 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // and publishRunHead enforces the same descendant-only rule. The monitor stays
 // on this run to watch the checks re-run against the published head.
 //
-// publishRunHead records nothing until the remote push, the gate mirror, and
-// the database write have all succeeded, so a partial failure leaves the run on
-// the pre-repair head and the next fix attempt re-enters this path.
+// A pre-push attestation failure or a post-push publication failure is
+// unsettled and parks the repair instead of letting the fixer run again.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if err := publishRunHead(sctx, headSHA, headSHA, nil); err != nil {
-		if errors.Is(err, errAttestationWriteFailed) {
-			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIAttestationUnsettled, shortObjectID(headSHA), err)
+		if errors.Is(err, errAttestationWriteFailed) || errors.Is(err, errPostPushPublicationUnsettled) {
+			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIPublicationUnsettled, shortObjectID(headSHA), err)
 		}
 		return ciRepairResult{}, err
 	}

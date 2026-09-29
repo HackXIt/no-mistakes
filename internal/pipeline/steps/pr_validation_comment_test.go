@@ -425,10 +425,13 @@ func TestPRPublicationSeparatesConciseDescriptionFromDetailedValidation(t *testi
 	if !strings.Contains(content.Body, "Keep descriptions concise") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
 		t.Fatalf("description lost narrative or compact attestation:\n%s", content.Body)
 	}
-	for _, want := range []string{validationCommentHeading, validationCommentHeadLabel + ": `" + head + "`", "## Intent", "## Risk Assessment", "## Testing", "## Pipeline", "go test ./...", "Provider contract tests passed"} {
+	for _, want := range []string{validationCommentHeading, validationCommentPublishedHead + ": `" + head + "`", "## Intent", "## Risk Assessment", "## Testing", "## Pipeline", "go test ./...", "Provider contract tests passed"} {
 		if !strings.Contains(comment, want) {
 			t.Fatalf("validation comment missing %q:\n%s", want, comment)
 		}
+	}
+	if strings.Contains(comment, validationCommentHeadLabel+": `"+head+"`") {
+		t.Fatalf("validation comment labelled a head without test provenance as validated:\n%s", comment)
 	}
 	if strings.Contains(comment, pipelineAttestationCommentPrefix) {
 		t.Fatalf("validation comment duplicated the enforcement marker:\n%s", comment)

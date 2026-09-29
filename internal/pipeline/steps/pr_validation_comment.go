@@ -71,10 +71,13 @@ func (s *PRStep) renderValidationCommentForPublishedHead(sctx *pipeline.StepCont
 	head := ""
 	publishedHead = strings.TrimSpace(publishedHead)
 	if publishedHead != "" {
-		if testedHead != "" && !strings.EqualFold(publishedHead, testedHead) {
-			head = joinBlocks(validationCommentPublishedHead+": `"+publishedHead+"`", validationCommentTestedHead+": `"+testedHead+"`")
-		} else {
+		switch {
+		case testedHead != "" && strings.EqualFold(publishedHead, testedHead):
 			head = validationCommentHeadLabel + ": `" + publishedHead + "`"
+		case testedHead != "":
+			head = joinBlocks(validationCommentPublishedHead+": `"+publishedHead+"`", validationCommentTestedHead+": `"+testedHead+"`")
+		default:
+			head = validationCommentPublishedHead + ": `" + publishedHead + "`"
 		}
 	}
 	budget := scm.MaxManagedPRCommentBytes - len(wrapValidationComment(""))
