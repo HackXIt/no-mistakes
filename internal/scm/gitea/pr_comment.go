@@ -51,7 +51,7 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 			}
 			comments = append(comments, comment)
 		}
-		if len(raw) < giteaCommentPageSize {
+		if len(raw) == 0 {
 			return comments, nil
 		}
 	}

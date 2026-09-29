@@ -17,6 +17,10 @@ func TestManagedPullCommentTransport(t *testing.T) {
 		"tea api --login work /repos/owner/repo/issues/7/comments?limit=50&page=1": {
 			stdout: `[{"id":11,"body":"old","issue_url":"` + issueURL + `","user":{"id":101}}]`,
 		},
+		"tea api --login work /repos/owner/repo/issues/7/comments?limit=50&page=2": {
+			stdout: `[{"id":13,"body":"later page","issue_url":"` + issueURL + `","user":{"id":101}}]`,
+		},
+		"tea api --login work /repos/owner/repo/issues/7/comments?limit=50&page=3": {stdout: `[]`},
 		"tea api --login work --method POST --field body=validation body /repos/owner/repo/issues/7/comments": {
 			stdout: `{"id":12,"body":"validation body","issue_url":"` + issueURL + `","user":{"id":101}}`,
 		},
@@ -29,7 +33,7 @@ func TestManagedPullCommentTransport(t *testing.T) {
 		t.Fatalf("AuthenticatedPRCommentPrincipal() = %q, %v", principal, err)
 	}
 	comments, err := host.ListPRComments(context.Background(), pr)
-	if err != nil || len(comments) != 1 || comments[0].ID != "11" || comments[0].Principal != "101" {
+	if err != nil || len(comments) != 2 || comments[0].ID != "11" || comments[1].ID != "13" || comments[0].Principal != "101" || comments[1].Principal != "101" {
 		t.Fatalf("ListPRComments() = %+v, %v", comments, err)
 	}
 	created, err := host.CreatePRComment(context.Background(), pr, body)

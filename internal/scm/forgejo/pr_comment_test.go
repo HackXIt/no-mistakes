@@ -15,9 +15,11 @@ func TestManagedPullCommentTransport(t *testing.T) {
 	issueURL := testBaseURL + "/api/v1/repos/" + testRepo + "/issues/42"
 	principal, _ := json.Marshal(map[string]any{"status": 200, "data": map[string]any{"id": 101}})
 	list, _ := json.Marshal(map[string]any{"status": 200, "data": []any{map[string]any{"id": 11, "body": "old", "issue_url": issueURL, "user": map[string]any{"id": 101}}}})
+	later, _ := json.Marshal(map[string]any{"status": 200, "data": []any{map[string]any{"id": 13, "body": "later page", "issue_url": issueURL, "user": map[string]any{"id": 101}}}})
+	empty, _ := json.Marshal(map[string]any{"status": 200, "data": []any{}})
 	created, _ := json.Marshal(map[string]any{"status": 201, "data": map[string]any{"id": 12, "body": body, "issue_url": issueURL, "user": map[string]any{"id": 101}}})
 	updated, _ := json.Marshal(map[string]any{"status": 200, "data": map[string]any{"id": 11, "body": body, "issue_url": issueURL, "user": map[string]any{"id": 101}}})
-	r := &fakeRecorder{responses: []fakeResponse{{stdout: string(principal)}, {stdout: string(list)}, {stdout: string(created)}, {stdout: string(updated)}}}
+	r := &fakeRecorder{responses: []fakeResponse{{stdout: string(principal)}, {stdout: string(list)}, {stdout: string(later)}, {stdout: string(empty)}, {stdout: string(created)}, {stdout: string(updated)}}}
 	host := newTestHost(r)
 	pr := &scm.PR{Number: "42", URL: testPRURL}
 	authenticated, err := host.AuthenticatedPRCommentPrincipal(context.Background())
@@ -25,7 +27,7 @@ func TestManagedPullCommentTransport(t *testing.T) {
 		t.Fatalf("AuthenticatedPRCommentPrincipal() = %q, %v", authenticated, err)
 	}
 	comments, err := host.ListPRComments(context.Background(), pr)
-	if err != nil || len(comments) != 1 || comments[0].ID != "11" || comments[0].Principal != "101" {
+	if err != nil || len(comments) != 2 || comments[0].ID != "11" || comments[1].ID != "13" || comments[0].Principal != "101" || comments[1].Principal != "101" {
 		t.Fatalf("ListPRComments() = %+v, %v", comments, err)
 	}
 	gotCreate, err := host.CreatePRComment(context.Background(), pr, body)
@@ -40,6 +42,8 @@ func TestManagedPullCommentTransport(t *testing.T) {
 	want := [][]string{
 		{"api", "GET", "user", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
 		{"api", "GET", "repos/" + testRepo + "/issues/42/comments?limit=50&page=1", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
+		{"api", "GET", "repos/" + testRepo + "/issues/42/comments?limit=50&page=2", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
+		{"api", "GET", "repos/" + testRepo + "/issues/42/comments?limit=50&page=3", "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
 		{"api", "POST", "repos/" + testRepo + "/issues/42/comments", "--data", payload, "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
 		{"api", "PATCH", "repos/" + testRepo + "/issues/comments/11", "--data", payload, "--base-url", testBaseURL, "--token-env", "FORGEJO_TEST_TOKEN", "--json"},
 	}

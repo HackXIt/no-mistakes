@@ -352,6 +352,18 @@ func runTeaManagedCommentStub(args []string) int {
 	method := argAfter(args, "--method")
 	endpoint := args[len(args)-1]
 	if method == "" || method == "GET" {
+		page := ""
+		if queryAt := strings.Index(endpoint, "?"); queryAt >= 0 {
+			for _, field := range strings.Split(endpoint[queryAt+1:], "&") {
+				if strings.HasPrefix(field, "page=") {
+					page = strings.TrimPrefix(field, "page=")
+					break
+				}
+			}
+		}
+		if page != "" && page != "1" {
+			comments = nil
+		}
 		data, _ := json.Marshal(comments)
 		fmt.Println(string(data))
 		return 0

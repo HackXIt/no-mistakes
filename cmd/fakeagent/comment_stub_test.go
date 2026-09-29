@@ -80,4 +80,11 @@ func TestGiteaManagedCommentStubUsesAuthenticatedPrincipal(t *testing.T) {
 	if err := json.Unmarshal([]byte(commentJSON), &comment); err != nil || comment.User.ID != principal.ID {
 		t.Fatalf("created comment principal = %q, %v", commentJSON, err)
 	}
+	secondPageJSON := runStubWithIO(t, "", func() int {
+		return runTeaStub([]string{"api", "--login", "e2e", "/repos/owner/repo/issues/42/comments?limit=50&page=2"})
+	})
+	var secondPage []teaManagedComment
+	if err := json.Unmarshal([]byte(secondPageJSON), &secondPage); err != nil || len(secondPage) != 0 {
+		t.Fatalf("second comment page = %q, %v", secondPageJSON, err)
+	}
 }

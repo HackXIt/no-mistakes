@@ -58,7 +58,7 @@ func (h *Host) ListPRComments(ctx context.Context, pr *scm.PR) ([]scm.PRComment,
 			}
 			comments = append(comments, comment)
 		}
-		if len(*response.Data) < forgejoCommentPageSize {
+		if len(*response.Data) == 0 {
 			return comments, nil
 		}
 	}
