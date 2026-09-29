@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
@@ -24,9 +25,8 @@ var errCIPublicationUnsettled = errors.New("CI repair publication is unsettled")
 // opposed to any other publishRunHead failure (review-approved-head
 // continuity, the force-push decision, the git push, remote verification,
 // the gate mirror, or the durable publication write). publishRepair uses
-// errors.Is against this and errPostPushPublicationUnsettled to decide whether
-// to apply the CI-specific errCIPublicationUnsettled treatment; the ordinary
-// Push step just propagates whatever publishRunHead returns.
+// errors.Is against this to apply the CI-specific errCIPublicationUnsettled
+// treatment; the ordinary Push step just propagates the failure.
 var errAttestationWriteFailed = errors.New("pipeline attestation write failed")
 
 // ciFixerClassRules is shared by every CI-repair prompt path so failing-check,
@@ -103,6 +103,10 @@ func (s *CIStep) repairFromFindings(sctx *pipeline.StepContext, host scm.Host, p
 	}
 	if outcome := s.ciFixAgentBudgetOutcome(sctx, issueDesc, err); outcome != nil {
 		return ciTerminalRepairOutcome(outcome, targets.Findings, sctx.DeferredFindings), nil
+	}
+	if err != nil && errors.Is(err, errPostPushPublicationUnsettled) {
+		sctx.Log(fmt.Sprintf("CI repair publication failed after the head was published: %v", err))
+		return nil, err
 	}
 	if err != nil && errors.Is(err, errCIPublicationUnsettled) {
 		sctx.Log(fmt.Sprintf("CI repair publication is not settled: %v", err))
@@ -752,17 +756,54 @@ func (s *CIStep) recordLocalRepair(sctx *pipeline.StepContext, headSHA string) (
 // and publishRunHead enforces the same descendant-only rule. The monitor stays
 // on this run to watch the checks re-run against the published head.
 //
-// A pre-push attestation failure or a post-push publication failure is
-// unsettled and parks the repair instead of letting the fixer run again.
+// A pre-push attestation failure is unsettled and parks the repair instead of
+// letting the fixer run again.
 func (s *CIStep) publishRepair(sctx *pipeline.StepContext, headSHA string) (ciRepairResult, error) {
 	if err := publishRunHead(sctx, headSHA, headSHA, nil); err != nil {
-		if errors.Is(err, errAttestationWriteFailed) || errors.Is(err, errPostPushPublicationUnsettled) {
+		if errors.Is(err, errPostPushPublicationUnsettled) {
+			if retryErr := s.retryPublishedValidationComment(sctx, headSHA, err); retryErr != nil {
+				return ciRepairResult{HeadAdvanced: true}, retryErr
+			}
+			sctx.Log("committed and pushed CI repair")
+			return ciRepairResult{HeadAdvanced: true}, nil
+		}
+		if errors.Is(err, errAttestationWriteFailed) {
 			return ciRepairResult{}, fmt.Errorf("%w at %s: %v", errCIPublicationUnsettled, shortObjectID(headSHA), err)
 		}
 		return ciRepairResult{}, err
 	}
 	sctx.Log("committed and pushed CI repair")
 	return ciRepairResult{HeadAdvanced: true}, nil
+}
+
+func (s *CIStep) retryPublishedValidationComment(sctx *pipeline.StepContext, headSHA string, initialErr error) error {
+	lastErr := initialErr
+	for attempt := 0; attempt < validationSettlementReads; attempt++ {
+		waitForNextPoll := s.waitForNextPoll
+		if waitForNextPoll == nil {
+			waitForNextPoll = func(ctx context.Context, interval time.Duration) error {
+				timer := time.NewTimer(interval)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+		if err := waitForNextPoll(sctx.Ctx, pollInterval(0)); err != nil {
+			return fmt.Errorf("%w: validation comment retry stopped: %v (last settlement error: %v)", errPostPushPublicationUnsettled, err, lastErr)
+		}
+		if err := refreshValidationCommentAfterPush(sctx, headSHA); err == nil {
+			sctx.Log("settled validation comment for published CI repair")
+			return nil
+		} else {
+			lastErr = err
+			sctx.Log(fmt.Sprintf("validation comment for published CI repair remains unsettled: %v", err))
+		}
+	}
+	return fmt.Errorf("%w: validation comment remains unsettled after retries: %v", errPostPushPublicationUnsettled, lastErr)
 }
 
 // attestHeadBeforePush writes this run's pipeline attestation for headSHA
@@ -848,16 +889,13 @@ func refreshValidationCommentAfterPush(sctx *pipeline.StepContext, headSHA strin
 	}
 	host, reason := buildHost(sctx, provider)
 	if host == nil {
-		if sctx.Log != nil && strings.TrimSpace(reason) != "" {
-			sctx.Log(fmt.Sprintf("skipping validation comment refresh: %s", reason))
+		if strings.TrimSpace(reason) == "" {
+			reason = "provider host is unavailable"
 		}
-		return nil
+		return fmt.Errorf("build validation comment host: %s", reason)
 	}
 	if err := host.Available(sctx.Ctx); err != nil {
-		if sctx.Log != nil {
-			sctx.Log(fmt.Sprintf("skipping validation comment refresh: %v", err))
-		}
-		return nil
+		return fmt.Errorf("validation comment host is unavailable: %w", err)
 	}
 	discovered, err := host.FindPR(sctx.Ctx, branch, "")
 	if err != nil {
@@ -868,7 +906,7 @@ func refreshValidationCommentAfterPush(sctx *pipeline.StepContext, headSHA strin
 		return fmt.Errorf("resolve pull request for validation comment: %w", err)
 	}
 	if pr == nil {
-		return nil
+		return fmt.Errorf("validation comment pull request is unavailable")
 	}
 	if err := persistRunPRURL(sctx, pr.URL, replaceStaleIdentity); err != nil {
 		return fmt.Errorf("persist pull request identity for validation comment: %w", err)

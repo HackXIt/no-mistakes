@@ -304,7 +304,7 @@ Choose how much generated validation is disclosed in the pipeline-owned comment.
 
 `collapsed` publishes the same recorded validation inside one closed `Validation` details block, with Intent outside the fold. Bitbucket Cloud falls back to the `full` presentation because it escapes raw HTML.
 
-`minimal` publishes only the enabled Intent, the validated head, and the prior compact one-line risk summary. It does not render or upload Testing logs or artifacts and omits review conversation and Pipeline history. The description still carries the sole head-bound attestation and signature.
+`minimal` publishes only the enabled Intent, head provenance, and the prior compact one-line risk summary. It labels a published head as `Validated head` only when the Test step records the same non-empty `tested_head_sha`; without Test provenance it labels only `Published head`, and after a continuity-proven repair without revalidation it shows distinct `Published head` and `Tested head` values. It does not render or upload Testing logs or artifacts and omits review conversation and Pipeline history. The description still carries the sole head-bound attestation and signature.
 
 An unrecognized value fails config parsing closed. The managed comment remains idempotently updated in place in every mode; mode changes replace its owned content without creating a second comment.
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
@@ -463,7 +464,7 @@ func TestCIStep_UnsettledRepairPushParksImmediately(t *testing.T) {
 	}
 }
 
-func TestCIStep_PostPushCommentFailureParksPublishedRepair(t *testing.T) {
+func TestCIStep_PostPushCommentFailureRecordsHeadAndDoesNotPark(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
@@ -480,28 +481,72 @@ func TestCIStep_PostPushCommentFailureParksPublishedRepair(t *testing.T) {
 	)
 
 	outcome, err := f.run(t)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || outcome != nil {
+		t.Fatalf("outcome = %#v error = %v, want a non-approvable settlement failure", outcome, err)
 	}
-	if outcome == nil || !outcome.NeedsApproval {
-		t.Fatalf("outcome = %#v, want unsettled publication approval gate", outcome)
-	}
-	var findings Findings
-	if err := json.Unmarshal([]byte(outcome.Findings), &findings); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(findings.Summary, "publication is unsettled") {
-		t.Fatalf("findings summary = %q, want publication settlement failure", findings.Summary)
+	if !strings.Contains(err.Error(), errPostPushPublicationUnsettled.Error()) {
+		t.Fatalf("error = %v, want post-push publication settlement failure", err)
 	}
 	newHead := f.localHead(t)
 	if newHead == f.headSHA || f.remoteHead(t) != newHead {
 		t.Fatalf("repair publication did not reach the remote: old=%s local=%s remote=%s", f.headSHA, newHead, f.remoteHead(t))
 	}
-	if f.sctx.Run.HeadSHA != f.headSHA {
-		t.Fatalf("run head = %s, want unsettled durable publication to remain at %s", f.sctx.Run.HeadSHA, f.headSHA)
+	if f.sctx.Run.HeadSHA != newHead {
+		t.Fatalf("run head = %s, want published head %s", f.sctx.Run.HeadSHA, newHead)
 	}
-	if !strings.Contains(f.log(), "CI repair publication is not settled") {
-		t.Fatalf("log did not report unsettled publication:\n%s", f.log())
+	run, dbErr := f.sctx.DB.GetRun(f.sctx.Run.ID)
+	if dbErr != nil || run == nil || run.HeadSHA != newHead || run.LastPushedSHA == nil || *run.LastPushedSHA != newHead {
+		t.Fatalf("durable publication was not preserved: run=%+v err=%v", run, dbErr)
+	}
+}
+
+func TestCIStep_PostPushCommentFailureRetriesSettlement(t *testing.T) {
+	f := newCIRepairFixture(t, false, writeCIFix)
+	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
+	if err := os.WriteFile(bodyFile, []byte(compliantPipelineBody(t, f.headSHA)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commentFile := filepath.Join(t.TempDir(), "pr-comments.json")
+	if err := os.WriteFile(commentFile, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.sctx.Env = append(f.sctx.Env,
+		"FAKE_CLI_PR_BODY_FILE="+bodyFile,
+		"FAKE_CLI_PR_COMMENT_FILE="+commentFile,
+		"FAKE_CLI_PR_TITLE=fix: ci",
+	)
+	f.sctx.Ctx = context.Background()
+	writeCIFix(f.dir)
+	waits := 0
+	step := &CIStep{waitForNextPoll: func(context.Context, time.Duration) error {
+		waits++
+		return os.WriteFile(commentFile, []byte("[]"), 0o644)
+	}}
+
+	repair, err := step.commitRepair(f.sctx, "repair the failing check")
+	if err != nil {
+		t.Fatalf("commitRepair: %v", err)
+	}
+	if !repair.HeadAdvanced || waits != 1 {
+		t.Fatalf("repair = %+v waits = %d, want one comment-only settlement retry", repair, waits)
+	}
+	newHead := f.localHead(t)
+	if f.sctx.Run.HeadSHA != newHead || f.remoteHead(t) != newHead {
+		t.Fatalf("published head was not retained: run=%s local=%s remote=%s", f.sctx.Run.HeadSHA, newHead, f.remoteHead(t))
+	}
+	if !strings.Contains(f.log(), "settled validation comment for published CI repair") {
+		t.Fatalf("log did not report comment settlement:\n%s", f.log())
+	}
+}
+
+func TestRefreshValidationCommentAfterPushUnavailableFails(t *testing.T) {
+	f := newCIRepairFixture(t, false, nil)
+	f.sctx.Env = append(f.sctx.Env, "FAKE_CLI_AUTH_ERR=authentication temporarily unavailable")
+	f.sctx.Ctx = context.Background()
+
+	err := refreshValidationCommentAfterPush(f.sctx, f.headSHA)
+	if err == nil || !strings.Contains(err.Error(), "validation comment host is unavailable") {
+		t.Fatalf("refresh error = %v, want unavailable host failure", err)
 	}
 }
 

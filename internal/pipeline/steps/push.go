@@ -216,9 +216,6 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
 		return err
 	}
-	if err := refreshValidationCommentAfterPush(sctx, headBeingPushed); err != nil {
-		return fmt.Errorf("%w: %v", errPostPushPublicationUnsettled, err)
-	}
 
 	if localRefUpdate != "" {
 		if err := updateNonSharedBranchRef(sctx, localRefUpdate); err != nil {
@@ -235,6 +232,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 		return err
 	}
 	sctx.Run.HeadSHA = headBeingPushed
+	if err := refreshValidationCommentAfterPush(sctx, headBeingPushed); err != nil {
+		return fmt.Errorf("%w: %v", errPostPushPublicationUnsettled, err)
+	}
 	return nil
 }
 
