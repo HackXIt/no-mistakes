@@ -214,6 +214,9 @@ func publishRunHead(sctx *pipeline.StepContext, headBeingPushed, localRefUpdate 
 	if err := updateGateMirrorAfterPush(ctx, sctx, ref, headBeingPushed, mirrorPlan); err != nil {
 		return err
 	}
+	if err := refreshValidationCommentAfterPush(sctx, headBeingPushed); err != nil {
+		return err
+	}
 
 	if localRefUpdate != "" {
 		if err := updateNonSharedBranchRef(sctx, localRefUpdate); err != nil {

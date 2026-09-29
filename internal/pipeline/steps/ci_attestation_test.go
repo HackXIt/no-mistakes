@@ -377,6 +377,7 @@ func TestRestampPRAttestation_MissingReaderIsSkipped(t *testing.T) {
 
 func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) {
 	f := newCIRepairFixture(t, false, writeCIFix)
+	insertCompletedStep(t, f.sctx, "test", `{"findings":[],"summary":"validated original head","testing_summary":"checkout passed on the original head","verdict":"go","scenarios":[{"name":"checkout","result":"pass","live":true,"evidence":"completed checkout","reason":""}],"tested_head_sha":"`+f.headSHA+`"}`, "")
 	original := compliantPipelineBody(t, f.headSHA)
 	bodyFile := filepath.Join(t.TempDir(), "pr-body.md")
 	if err := os.WriteFile(bodyFile, []byte(original), 0o644); err != nil {
@@ -425,8 +426,8 @@ func TestCIStep_PublishRepairRebindsAttestationAcrossRepairPushes(t *testing.T) 
 	if err != nil || json.Unmarshal(data, &comments) != nil || len(comments) != 1 || comments[0].Body == nil {
 		t.Fatalf("read refreshed validation comment: err=%v data=%s", err, data)
 	}
-	if !strings.Contains(*comments[0].Body, validationCommentHeadLabel+": `"+newHead+"`") || strings.Contains(*comments[0].Body, pipelineAttestationCommentPrefix) {
-		t.Fatalf("CI repair validation comment was not refreshed for the new head:\n%s", *comments[0].Body)
+	if !strings.Contains(*comments[0].Body, validationCommentPublishedHead+": `"+newHead+"`") || !strings.Contains(*comments[0].Body, validationCommentTestedHead+": `"+f.headSHA+"`") || strings.Contains(*comments[0].Body, validationCommentHeadLabel+": `"+newHead+"`") || strings.Contains(*comments[0].Body, pipelineAttestationCommentPrefix) {
+		t.Fatalf("CI repair validation comment lost published/tested head provenance:\n%s", *comments[0].Body)
 	}
 }
 
@@ -750,6 +751,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 	gitCmd(t, dir, "push", "origin", "feature")
 
 	priorAttestedBody := compliantPipelineBody(t, priorHead)
+	commentFile := filepath.Join(t.TempDir(), "pr-comments.json")
 
 	// A second clone prepares (but does not yet push) an interloper commit
 	// that will land on the remote between the Push step's force-push
@@ -801,6 +803,7 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 		"FAKE_CLI_PR_HEAD_SHA=deadbeef",
 		"FAKE_CLI_PR_LIST_JSON=[{\"number\":42,\"url\":\"https://github.com/test/repo/pull/42\",\"baseRefName\":\"main\"}]",
 		"FAKE_CLI_PR_BODY_FILE=" + bodyFile,
+		"FAKE_CLI_PR_COMMENT_FILE=" + commentFile,
 		"FAKE_CLI_PR_TITLE=fix: existing pr",
 		"FAKE_CLI_REAL_GIT=" + realGit,
 		"FAKE_CLI_INTERLOPER_DIR=" + other,
@@ -827,6 +830,9 @@ func TestPushStep_PushFailureAfterAttestationLeavesBodyAhead(t *testing.T) {
 	remoteHead := gitCmd(t, upstream, "rev-parse", "refs/heads/feature")
 	if remoteHead == newHead {
 		t.Fatal("expected the push to have actually failed - remote must not carry newHead")
+	}
+	if _, err := os.Stat(commentFile); !os.IsNotExist(err) {
+		t.Fatalf("validation comment changed before the push settled: %v", err)
 	}
 }
 

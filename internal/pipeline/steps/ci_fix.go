@@ -832,18 +832,58 @@ func attestHeadBeforePush(sctx *pipeline.StepContext, headSHA string, steps []*d
 	if err := restampPRAttestationWithSteps(sctx.Ctx, host, pr, headSHA, steps, sctx.Log, attestationPolicyFrom(sctx)); err != nil {
 		return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
 	}
-	// Existing runs already own a durable review object. Refresh its detailed
-	// validation comment before the push as well, so a CI repair never leaves
-	// the human evidence on an older head. Enforcement remains bound to the
-	// compact description marker above.
-	if runPRURL(sctx) != "" {
-		comment, err := (&PRStep{}).renderValidationCommentForHead(sctx, provider, headSHA)
-		if err != nil {
-			return fmt.Errorf("%w: render validation comment: %v", errAttestationWriteFailed, err)
+	return nil
+}
+
+func refreshValidationCommentAfterPush(sctx *pipeline.StepContext, headSHA string) error {
+	if runPRURL(sctx) == "" {
+		return nil
+	}
+	provider := resolvedProvider(sctx)
+	if !supportsPRTemplates(provider) {
+		return nil
+	}
+	branch := strings.TrimPrefix(sctx.Run.Branch, "refs/heads/")
+	if branch == effectivePRBaseBranch(sctx) {
+		return nil
+	}
+	host, reason := buildHost(sctx, provider)
+	if host == nil {
+		if sctx.Log != nil && strings.TrimSpace(reason) != "" {
+			sctx.Log(fmt.Sprintf("skipping validation comment refresh: %s", reason))
 		}
-		if err := publishValidationComment(sctx, host, pr, comment); err != nil {
-			return fmt.Errorf("%w: %v", errAttestationWriteFailed, err)
+		return nil
+	}
+	if err := host.Available(sctx.Ctx); err != nil {
+		if sctx.Log != nil {
+			sctx.Log(fmt.Sprintf("skipping validation comment refresh: %v", err))
 		}
+		return nil
+	}
+	discovered, err := host.FindPR(sctx.Ctx, branch, "")
+	if err != nil {
+		return fmt.Errorf("find pull request for validation comment: %w", err)
+	}
+	pr, replaceStaleIdentity, err := bindExistingPR(sctx, host, discovered)
+	if err != nil {
+		return fmt.Errorf("resolve pull request for validation comment: %w", err)
+	}
+	if pr == nil {
+		return nil
+	}
+	if err := persistRunPRURL(sctx, pr.URL, replaceStaleIdentity); err != nil {
+		return fmt.Errorf("persist pull request identity for validation comment: %w", err)
+	}
+	comment, err := (&PRStep{}).renderValidationCommentForHead(sctx, provider, headSHA)
+	if err != nil {
+		return fmt.Errorf("render validation comment after push: %w", err)
+	}
+	copyContext := *sctx
+	copyRun := *sctx.Run
+	copyRun.HeadSHA = headSHA
+	copyContext.Run = &copyRun
+	if err := publishValidationComment(&copyContext, host, pr, comment); err != nil {
+		return fmt.Errorf("refresh validation comment after push: %w", err)
 	}
 	return nil
 }

@@ -12,17 +12,20 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/types"
 )
 
 const (
-	validationCommentNamespace = "no-mistakes-validation-comment"
-	validationCommentStart     = "<!-- " + validationCommentNamespace + ":v1 sha256="
-	validationCommentEnd       = "<!-- /" + validationCommentNamespace + ":v1 -->"
-	validationCommentHeading   = "## Validation evidence"
-	validationCommentHeadLabel = "Validated head"
-	validationTruncationMarker = "\n\n…(validation evidence truncated)"
-	validationSettlementReads  = 3
-	validationSettlementDelay  = 100 * time.Millisecond
+	validationCommentNamespace     = "no-mistakes-validation-comment"
+	validationCommentStart         = "<!-- " + validationCommentNamespace + ":v1 sha256="
+	validationCommentEnd           = "<!-- /" + validationCommentNamespace + ":v1 -->"
+	validationCommentHeading       = "## Validation evidence"
+	validationCommentHeadLabel     = "Validated head"
+	validationCommentPublishedHead = "Published head"
+	validationCommentTestedHead    = "Tested head"
+	validationTruncationMarker     = "\n\n…(validation evidence truncated)"
+	validationSettlementReads      = 3
+	validationSettlementDelay      = 100 * time.Millisecond
 )
 
 var validationCommentMarkerPattern = regexp.MustCompile(`(?i)<!--\s*/?\s*` + validationCommentNamespace)
@@ -38,19 +41,41 @@ type ownedValidationComment struct {
 // record to consumers that inspect comments. The ordinary no-mistakes link is
 // retained as human provenance for the Pipeline section.
 func (s *PRStep) renderValidationComment(sctx *pipeline.StepContext, provider scm.Provider) (string, error) {
+	head := ""
+	if sctx != nil && sctx.Run != nil {
+		head = sctx.Run.HeadSHA
+	}
+	return s.renderValidationCommentForPublishedHead(sctx, provider, head)
+}
+
+func (s *PRStep) renderValidationCommentForPublishedHead(sctx *pipeline.StepContext, provider scm.Provider, publishedHead string) (string, error) {
 	steps, rounds, err := loadPRPipelineRecords(sctx)
 	if err != nil {
 		return "", err
 	}
-	pipelineMD, risk, testing := s.buildPipelineSectionFromRecords(sctx, provider, steps, rounds)
+	testedHead := testingHeadFromRecords(steps, rounds)
+	evidenceContext := sctx
+	if testedHead != "" && !strings.EqualFold(strings.TrimSpace(publishedHead), testedHead) && sctx != nil && sctx.Run != nil {
+		copyContext := *sctx
+		copyRun := *sctx.Run
+		copyRun.HeadSHA = testedHead
+		copyContext.Run = &copyRun
+		evidenceContext = &copyContext
+	}
+	pipelineMD, risk, testing := s.buildPipelineSectionFromRecords(evidenceContext, provider, steps, rounds)
 	pipelineMD = stripPipelineAttestation(pipelineMD)
 	intent := ""
 	if published := publicPRIntent(sctx); published != "" {
 		intent = "## Intent\n\n" + neutralizeAttestationMarkers(published)
 	}
 	head := ""
-	if sctx != nil && sctx.Run != nil && strings.TrimSpace(sctx.Run.HeadSHA) != "" {
-		head = validationCommentHeadLabel + ": `" + strings.TrimSpace(sctx.Run.HeadSHA) + "`"
+	publishedHead = strings.TrimSpace(publishedHead)
+	if publishedHead != "" {
+		if testedHead != "" && !strings.EqualFold(publishedHead, testedHead) {
+			head = joinBlocks(validationCommentPublishedHead+": `"+publishedHead+"`", validationCommentTestedHead+": `"+testedHead+"`")
+		} else {
+			head = validationCommentHeadLabel + ": `" + publishedHead + "`"
+		}
 	}
 	budget := scm.MaxManagedPRCommentBytes - len(wrapValidationComment(""))
 	if budget <= 0 {
@@ -78,14 +103,28 @@ func (s *PRStep) renderValidationComment(sctx *pipeline.StepContext, provider sc
 }
 
 func (s *PRStep) renderValidationCommentForHead(sctx *pipeline.StepContext, provider scm.Provider, head string) (string, error) {
-	if sctx == nil || sctx.Run == nil || strings.TrimSpace(head) == "" || sctx.Run.HeadSHA == head {
-		return s.renderValidationComment(sctx, provider)
+	if strings.TrimSpace(head) == "" && sctx != nil && sctx.Run != nil {
+		head = sctx.Run.HeadSHA
 	}
-	copyContext := *sctx
-	copyRun := *sctx.Run
-	copyRun.HeadSHA = head
-	copyContext.Run = &copyRun
-	return s.renderValidationComment(&copyContext, provider)
+	return s.renderValidationCommentForPublishedHead(sctx, provider, head)
+}
+
+func testingHeadFromRecords(steps []*db.StepResult, rounds map[string][]*db.StepRound) string {
+	for _, step := range steps {
+		if step == nil || step.StepName != types.StepTest {
+			continue
+		}
+		for _, raw := range testingEvidenceFindingsJSON(step, rounds[step.ID]) {
+			if raw == nil || strings.TrimSpace(*raw) == "" {
+				continue
+			}
+			findings, err := types.ParseFindingsJSON(*raw)
+			if err == nil && strings.TrimSpace(findings.TestedHeadSHA) != "" {
+				return strings.TrimSpace(findings.TestedHeadSHA)
+			}
+		}
+	}
+	return ""
 }
 
 func fitMinimalValidationComment(heading, head, intent, risk string, budget int) string {

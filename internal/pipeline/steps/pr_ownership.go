@@ -358,6 +358,61 @@ func canonicalLegacyStepSummary(summary string) bool {
 	}
 }
 
+func canonicalLegacyDetailBody(summary, body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false
+	}
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 {
+		return false
+	}
+	separator := strings.Index(summary, " **")
+	rest := summary[separator+len(" **"):]
+	nameEnd := strings.Index(rest, "** - ")
+	emoji := summary[:separator]
+	outcome := rest[nameEnd+len("** - "):]
+	exact := func(value string) bool { return len(lines) == 1 && lines[0] == value }
+	switch emoji {
+	case "⏳":
+		if outcome == "pending" {
+			return exact("Step has not started yet.")
+		}
+		return exact("Step is currently running.")
+	case "⏸️":
+		if outcome == "awaiting approval" {
+			return exact("Waiting for user approval.")
+		}
+		return exact("Waiting to review the latest fix.")
+	case "🔄":
+		return exact("Agent is currently applying fixes.")
+	case "❌":
+		return exact("Step failed.")
+	case "⏭️":
+		return exact("Step was skipped.")
+	case "⚠️":
+		if outcome == "findings unavailable" {
+			return exact("findings not recorded") || exact("failed to parse findings") || exact("No round details recorded.")
+		}
+		if canonicalLegacyFindingSummary(outcome) {
+			return false
+		}
+	case "🔧":
+		return false
+	}
+	for _, line := range lines {
+		if line != "✅ No issues found." {
+			return false
+		}
+	}
+	return true
+}
+
 func canonicalLegacyPipelineSuffix(suffix string) bool {
 	if suffix == "" || suffix == "\n\n" {
 		return true
@@ -388,7 +443,7 @@ func canonicalLegacyPipelineSuffix(suffix string) bool {
 		}
 		contentStart := summaryEnd + len("</summary>\n\n")
 		closeAt := strings.Index(rest[contentStart:], "\n</details>")
-		if closeAt < 0 || strings.TrimSpace(rest[contentStart:contentStart+closeAt]) == "" {
+		if closeAt < 0 || !canonicalLegacyDetailBody(rest[summaryStart:summaryEnd], rest[contentStart:contentStart+closeAt]) {
 			return false
 		}
 		rest = rest[contentStart+closeAt+len("\n</details>"):]

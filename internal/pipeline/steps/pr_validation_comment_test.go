@@ -614,12 +614,12 @@ func TestFitValidationCommentKeepsMarkdownBalancedWithinBudget(t *testing.T) {
 func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	legacyText := "## What Changed\n\nHuman-adjusted summary.\n\n## Testing\n\nHuman note.\n\n"
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	legacy := legacyText + "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nRecorded history.\n\n</details>"
+	legacy := legacyText + "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\n✅ No issues found.\n\n</details>"
 	parts, err := parseOrMigratePROwnedBody(legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(parts.before, "Human-adjusted summary.") || !strings.Contains(parts.before, "Human note.") || !strings.Contains(parts.before, "Recorded history.") || parts.managed {
+	if !strings.Contains(parts.before, "Human-adjusted summary.") || !strings.Contains(parts.before, "Human note.") || !strings.Contains(parts.before, "✅ No issues found.") || parts.managed {
 		t.Fatalf("legacy migration changed visible text: %+v", parts)
 	}
 	appendix := joinBlocks(noMistakesPRSignature, legacyMarker)
@@ -627,31 +627,31 @@ func TestLegacyGeneratedDescriptionMigrationPreservesVisibleText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content.Body, "Human-adjusted summary.") || !strings.Contains(content.Body, "Human note.") || !strings.Contains(content.Body, "Recorded history.") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
+	if !strings.Contains(content.Body, "Human-adjusted summary.") || !strings.Contains(content.Body, "Human note.") || !strings.Contains(content.Body, "✅ No issues found.") || strings.Count(content.Body, pipelineAttestationCommentPrefix) != 1 {
 		t.Fatalf("legacy migration lost prose or duplicated attestation:\n%s", content.Body)
 	}
 }
 
 func TestLegacyGeneratedDescriptionMigrationAcceptsFormerStepSummaries(t *testing.T) {
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	summaries := []string{
-		"⏳ **CI** - pending",
-		"⏸️ **Review** - awaiting approval",
-		"🔄 **Review** - auto-fixing",
-		"❌ **Test** - failed",
-		"⏭️ **Document** - skipped",
-		"⚠️ **Review** - findings unavailable",
-		"⚠️ **Review** - medium risk",
-		"🚨 **Review** - high risk",
-		"⚠️ **Review** - 3 issues (1 error, 2 warnings)",
-		"🔧 **Review** - 3 issues found → auto-fixed (2) ✅",
-		"🔧 **Review** - 3 issues found → auto-fixed → no changes applied (2) → fix attempted; result not reported ✅",
-		"✅ **Lint** - passed",
+	cases := []struct {
+		summary string
+		detail  string
+	}{
+		{"⏳ **CI** - pending", "Step has not started yet."},
+		{"⏸️ **Review** - awaiting approval", "Waiting for user approval."},
+		{"🔄 **Review** - auto-fixing", "Agent is currently applying fixes."},
+		{"❌ **Test** - failed", "Step failed."},
+		{"⏭️ **Document** - skipped", "Step was skipped."},
+		{"⚠️ **Review** - findings unavailable", "No round details recorded."},
+		{"⚠️ **Review** - medium risk", "✅ No issues found."},
+		{"🚨 **Review** - high risk", "✅ No issues found."},
+		{"✅ **Lint** - passed", "✅ No issues found."},
 	}
-	for _, summary := range summaries {
-		body := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>" + summary + "</summary>\n\nRecorded history.\n</details>"
+	for _, tc := range cases {
+		body := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>" + tc.summary + "</summary>\n\n" + tc.detail + "\n</details>"
 		if _, err := parseOrMigratePROwnedBody(body); err != nil {
-			t.Errorf("former summary %q was rejected: %v", summary, err)
+			t.Errorf("former summary %q was rejected: %v", tc.summary, err)
 		}
 	}
 }
@@ -670,7 +670,7 @@ func TestLegacyMinimalDescriptionMigrationPreservesNarrativeAndRisk(t *testing.T
 
 func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t *testing.T) {
 	legacyMarker := pipelineAttestationCommentPrefix + `{"head_sha":"abc","steps":[]}` + pipelineAttestationCommentClosingToken
-	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nRecorded history.\n\n</details>"
+	footer := "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\n✅ No issues found.\n\n</details>"
 	quoted := "> " + strings.ReplaceAll(footer, "\n", "\n> ")
 	minimal := noMistakesPRSignature + "\n\n" + legacyMarker
 	cases := map[string]string{
@@ -683,10 +683,13 @@ func TestLegacyGeneratedDescriptionMigrationRefusesQuotedOrNoncanonicalMarkers(t
 		"malformed details":         "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nQuoted context.",
 		"author archive details":    "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>Author archive</summary>\n\nQuoted context.\n</details>",
 		"invented status details":   "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - archived</summary>\n\nQuoted context.\n</details>",
+		"edited detail content":     "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nAuthor archive.\n</details>",
+		"mismatched static detail":  "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>✅ **Review** - passed</summary>\n\nStep failed.\n</details>",
 		"reordered severities":      "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>⚠️ **Review** - 2 issues (1 warning, 1 error)</summary>\n\nQuoted context.\n</details>",
 		"wrong severity total":      "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>⚠️ **Review** - 3 issues (1 error, 1 warning)</summary>\n\nQuoted context.\n</details>",
 		"duplicate fix outcome":     "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>🔧 **Review** - 2 issues found → auto-fixed → auto-fixed ✅</summary>\n\nQuoted context.\n</details>",
 		"reordered fix outcomes":    "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>🔧 **Review** - 2 issues found → no changes applied → auto-fixed ✅</summary>\n\nQuoted context.\n</details>",
+		"fix detail count mismatch": "## Pipeline\n\n" + noMistakesPRSignature + "\n\n" + legacyMarker + "\n\n<details>\n<summary>🔧 **Review** - 2 issues found → auto-fixed (2) ✅</summary>\n\n🔧 Fix applied.\n\n✅ Re-checked - no issues remain.\n</details>",
 		"fenced minimal":            "```text\n" + minimal + "\n```",
 		"embedded minimal":          "Author archive:\n\n" + minimal + "\n\nHuman suffix.",
 		"duplicated minimal marker": minimal + "\n\n" + minimal,
