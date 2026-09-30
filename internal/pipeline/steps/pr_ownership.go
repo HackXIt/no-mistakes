@@ -530,12 +530,12 @@ func parseOrMigratePROwnedBody(body string) (prOwnedBody, error) {
 	return prOwnedBody{before: migrated}, nil
 }
 
-// composeOwnedPRContent uses the same publication redaction owner as ordinary
+// composeOwnedPRContent uses the same description redaction owner as ordinary
 // drafting, BEFORE stamping the byte-integrity guard. No clamp or heading-based
-// stripper may run here: if author text and all recorded evidence cannot fit,
-// publication fails. That includes suffix text/closing lines added after the
-// generated block. Model-authored copies of ownership markers in evidence are
-// escaped before the actual delimiters are inserted, like foreign attestations.
+// stripper may run here: if author text and the compact machine trailer cannot
+// fit, publication fails. That includes suffix text/closing lines added after
+// the generated block. Model-authored copies of ownership markers in narrative
+// text are escaped before the actual delimiters are inserted.
 func composeOwnedPRContent(parts prOwnedBody, title, appendix string, bodyLimit int, provider scm.Provider) (prContent, error) {
 	before := redactPRContent(prContent{Body: parts.before}).Body
 	after := redactPRContent(prContent{Body: parts.after}).Body
@@ -635,8 +635,8 @@ func updateOwnedPR(sctx *pipeline.StepContext, host scm.Host, pr *scm.PR, initia
 	return fmt.Errorf("PR content kept changing before template update; no write performed")
 }
 
-// Restamping is also an owner-authorized appendix edit. Recompute its integrity
-// guard without touching author text, while refusing evidence edited by anyone
+// Restamping is also an owner-authorized trailer edit. Recompute its integrity
+// guard without touching author text, while refusing a trailer edited by anyone
 // else. Legacy unmarked bodies retain the existing restamp contract.
 func rebindOwnedPRAttestation(body, head string, steps []*db.StepResult, policy pipelineAttestationPolicy) (string, bool, error) {
 	if !hasPRAppendixMarkers(body) {

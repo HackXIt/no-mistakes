@@ -414,17 +414,17 @@ func describePR(pr *scm.PR) string {
 	return ""
 }
 
-// buildPRContent drafts the pull request title and body and then applies the
-// publication redaction boundary. New template bodies and author-preserving
-// updates use composeOwnedPRContent, which calls the same redactPRContent owner
-// before stamping its integrity guard. This covers every source: agent-authored
-// prose, extracted user intent, findings, fix summaries, step errors, artifact
-// paths, artifact captions, and captured output embedded from evidence files.
+// buildPRContent drafts the pull request title and concise description, adds
+// the compact machine trailer, and then applies the description redaction
+// boundary. New template bodies and author-preserving updates use
+// composeOwnedPRContent, which calls the same redactPRContent owner before
+// stamping its integrity guard. Detailed findings, fix summaries, step errors,
+// and artifact content are published through renderValidationComment, which
+// applies the same safepath boundary to the complete comment.
 //
-// The scrub deliberately sits here rather than at each of those sources. A
-// per-source scrub is a set of guards that has to be complete to work, and the
-// next rendering path somebody adds is not going to have one; a boundary scrub
-// covers sources nobody has written yet.
+// Both scrubs deliberately sit at their publication boundaries rather than at
+// individual sources. Per-source guards have to remain complete, while a
+// boundary scrub also covers sources added later.
 func (s *PRStep) buildPRContent(sctx *pipeline.StepContext, branch, baseBranch, baseSHA string, provider scm.Provider, bodyLimit int) (prContent, error) {
 	if name := configuredPRTemplate(sctx); name != "" {
 		if !supportsPRTemplates(provider) {
