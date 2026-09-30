@@ -29,11 +29,11 @@ type evidenceLinks struct {
 }
 
 // publishRunEvidence copies this run's evidence directory onto the repository's
-// orphan evidence branch and returns the links the PR body should use. It
-// returns nil whenever evidence is not opted in, there is nothing to publish,
-// or publication failed. The renderer then omits evidence-branch links that
-// would not resolve; it may still use an uploaded media attachment, otherwise
-// the artifact keeps its local-path rendering.
+// orphan evidence branch and returns the links the managed validation comment
+// should use. It returns nil whenever evidence is not opted in, there is nothing
+// to publish, or publication failed. The renderer then omits evidence-branch
+// links that would not resolve; it may still use an uploaded media attachment,
+// otherwise the artifact keeps its local-path rendering.
 func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 	if sctx == nil || sctx.Config == nil || sctx.Repo == nil || sctx.Run == nil || !sctx.Config.Test.Evidence.StoreInRepo {
 		return nil
@@ -48,8 +48,8 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		segments = []string{sctx.Run.ID}
 	}
 	// Links are built from the registered repository URL, never from the push
-	// URL: the latter can carry an embedded credential, and a PR body must
-	// never publish one. Without a link base there is nothing to gain from
+	// URL: the latter can carry an embedded credential, and public validation
+	// must never publish one. Without a link base there is nothing to gain from
 	// publishing, so the branch is not pushed at all rather than pushed and
 	// never referenced. Only GitHub blob/raw URLs are derivable today.
 	linkURL := sctx.Repo.UpstreamURL

@@ -214,7 +214,7 @@ func (c *UserAssetClient) httpClient() *http.Client {
 
 // UploadFile sends asset and returns the user-attachments URL. The URL is
 // checked against gh's response shape before it is returned so a surprising
-// payload cannot become a dead link in a PR body.
+// payload cannot become a dead link in the managed validation comment.
 func (c *UserAssetClient) UploadFile(ctx context.Context, asset UserAsset) (string, error) {
 	if c == nil {
 		return "", errors.New("user-attachments client is not configured")

@@ -4,11 +4,10 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 )
 
-// publicPRIntent returns the intent text published on the PR body, or "" when
-// publication is suppressed. It is the single publication gate: every PR-body
-// render path (ordinary drafting, fallback content, and template appendix)
-// goes through it, so caller-side omission and the repository's trusted
-// policy compose here and nowhere else.
+// publicPRIntent returns the intent text published in the managed validation
+// comment, or "" when publication is suppressed. It is the single publication
+// gate, so caller-side omission and the repository's trusted policy compose
+// here and nowhere else.
 //
 // The control is tighten-only in both directions:
 //
@@ -38,9 +37,9 @@ func publicPRIntent(sctx *pipeline.StepContext) string {
 }
 
 // runOmitsIntent reports whether this run was started with the caller-side,
-// tighten-only request to keep the generated Intent section out of the PR
-// body. The decision is stamped on the run row at start, so it survives
-// daemon restarts and reruns.
+// tighten-only request to keep the generated Intent section out of the managed
+// validation comment. The decision is stamped on the run row at start, so it
+// survives daemon restarts and reruns.
 func runOmitsIntent(sctx *pipeline.StepContext) bool {
 	return sctx != nil && sctx.Run != nil && sctx.Run.OmitIntent
 }

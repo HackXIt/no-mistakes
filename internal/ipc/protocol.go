@@ -89,8 +89,8 @@ type PushReceivedParams struct {
 	ValidationGeneration string           `json:"validation_generation,omitempty"`
 	PRBaseBranch         string           `json:"pr_base_branch,omitempty"`
 	// OmitIntent carries the caller-side, tighten-only request to keep the
-	// generated Intent section out of the PR body. It never publishes intent
-	// a repository's trusted config disabled.
+	// generated Intent section out of the managed validation comment. It never
+	// publishes intent that a repository's trusted config disabled.
 	OmitIntent bool `json:"omit_intent,omitempty"`
 	// ReconciledPreviousHead is the head a reconciled private mirror branch
 	// carried before the pusher archived and removed it. The push re-creates the
@@ -417,7 +417,7 @@ type RunInfo struct {
 	PRBaseBranch *string `json:"pr_base_branch,omitempty"`
 	// OmitIntent is true when this run was started with the caller-side,
 	// tighten-only request to keep the generated Intent section out of the
-	// PR body (see runs.omit_intent).
+	// managed validation comment (see runs.omit_intent).
 	OmitIntent bool `json:"omit_intent,omitempty"`
 	// AwaitingAgent is true while the run is parked at a gate awaiting the
 	// driving agent's response. AwaitingAgentSince is the unix-seconds time it

@@ -10,13 +10,12 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/reviewqa"
 )
 
-// Bounds on the published review conversation. The PR body competes for a
-// host-specific budget (Azure DevOps caps a whole description at 4000
-// characters), and the conversation is a RECORD, not a gate: losing its tail
-// to a tight budget is acceptable, losing the Pipeline attestation is not. So
-// it is rendered inside the Pipeline section as an ordinary `### ` group, which
-// the existing budget logic can drop whole, and it is bounded here as well so
-// a long conversation cannot be the reason a body needs truncating.
+// Bounds on the published review conversation. The managed validation comment
+// has a shared provider budget, and the conversation is a RECORD, not a gate:
+// losing its tail to a tight budget is acceptable. It is rendered inside the
+// Pipeline section as an ordinary `### ` group, which the budget logic can drop
+// whole, and it is bounded here as well so a long conversation cannot dominate
+// the comment.
 const (
 	maxPublishedConversationEntries = 12
 	maxPublishedConversationChars   = 240

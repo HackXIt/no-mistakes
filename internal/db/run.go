@@ -85,8 +85,9 @@ type Run struct {
 	// over pr.base_branch in repo config for this run only.
 	PRBaseBranch *string
 	// OmitIntent records the caller-side, tighten-only decision to keep the
-	// generated Intent section out of the PR body for this run. It is the
-	// OR of the per-run flag and the operator's global intent.publish_intent
+	// generated Intent section out of the managed validation comment for this
+	// run. It is the OR of the per-run flag and the operator's global
+	// intent.publish_intent
 	// default, resolved once at run start. It can only reduce publication:
 	// the repository's trusted pr.publish_intent is enforced independently
 	// by the PR step.

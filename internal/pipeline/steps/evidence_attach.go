@@ -71,10 +71,10 @@ func collectPRTestingArtifacts(sctx *pipeline.StepContext, steps []*db.StepResul
 	return nil
 }
 
-// attachRunEvidenceMedia uploads image/video evidence at PR render time and
-// returns a map of local path -> user-attachments URL. Any failure for a file
-// leaves that file out of the map so the PR body keeps today's rendering
-// rather than a dead link.
+// attachRunEvidenceMedia uploads image/video evidence when detailed validation
+// is rendered and returns a map of local path -> user-attachments URL. Any
+// failure for a file leaves that file out of the map so the managed validation
+// comment keeps today's rendering rather than a dead link.
 func (s *PRStep) attachRunEvidenceMedia(sctx *pipeline.StepContext, provider scm.Provider, steps []*db.StepResult, rounds map[string][]*db.StepRound) map[string]string {
 	artifacts := collectPRTestingArtifacts(sctx, steps, rounds)
 	var eligible []types.TestArtifact

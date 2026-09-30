@@ -340,8 +340,9 @@ var migrationStatements = []string{
 	// forge default branch.
 	`ALTER TABLE runs ADD COLUMN pr_base_branch TEXT`,
 	// The caller-side, tighten-only decision to keep the generated Intent
-	// section out of the PR body (axi run --no-publish-intent, or
-	// intent.publish_intent: false in global config). Resolved once at run
+	// section out of the managed validation comment (axi run
+	// --no-publish-intent, or intent.publish_intent: false in global config).
+	// Resolved once at run
 	// start and stamped here so recovery and reruns inherit it instead of
 	// re-reading a since-changed global config. It can only reduce
 	// publication; the repository's trusted pr.publish_intent still wins

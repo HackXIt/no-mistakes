@@ -95,16 +95,17 @@ type testingSummaryOptions struct {
 	repoRoot             string
 	// evidenceRoot is the run's evidence directory. Together with repoRoot it
 	// is the allowlist for absolute artifact paths an agent reported: a path
-	// under neither is dropped rather than rendered into the PR body. Empty
-	// disables the evidence half of the allowlist, which fails closed.
+	// under neither is dropped rather than rendered into the managed validation
+	// comment. Empty disables the evidence half of the allowlist, which fails
+	// closed.
 	evidenceRoot string
 	// evidence links artifacts published to the repository's orphan evidence
 	// branch. It is nil when nothing was published, and the artifacts then
 	// render as local paths rather than as links that would not resolve.
 	evidence *evidenceLinks
 	// attachments maps a local evidence path to a GitHub user-attachments URL
-	// uploaded at PR render time. Nil means nothing was uploaded; the renderer
-	// then keeps today's local-path or commit-pinned link.
+	// uploaded while detailed validation was rendered. Nil means nothing was
+	// uploaded; the renderer then keeps today's local-path or commit-pinned link.
 	attachments map[string]string
 }
 

@@ -116,7 +116,7 @@ A round stores its findings, duration, any selected finding IDs and whether that
 That merged payload can include per-finding user notes and user-authored findings added from the TUI or AXI interface.
 AXI status uses the same round history and the persisted auto-fix limit to show the active fix attempt, for example `auto-fix 1/3` or `fix 2`.
 The step log records a marker when each automatic or user-triggered fix round starts.
-The generated PR can surface this recorded evidence; the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the PR body composition and size-limit contract.
+The managed validation comment can surface this recorded evidence; the [pipeline steps reference](/no-mistakes/reference/pipeline-steps/#pr) owns the description/comment composition and size-limit contracts.
 The full round history remains available in the run log.
 
 Round trigger types:

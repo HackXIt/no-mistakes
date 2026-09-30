@@ -152,7 +152,7 @@ func renderScenarioTable(scenarios []types.TestScenario, flavor prBodyFlavor) st
 // to a single line (a newline would end the row), pipe-escaped (an unescaped
 // pipe would invent a column), fold-marker escaped like every other quoted
 // agent string, and length-bounded so one verbose scenario cannot dominate the
-// PR body.
+// managed validation comment.
 func scenarioCell(text string, flavor prBodyFlavor) string {
 	clean := sanitizePromptText(text)
 	if clean == "" {

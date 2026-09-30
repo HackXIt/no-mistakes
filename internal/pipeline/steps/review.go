@@ -490,7 +490,8 @@ Risk assessment (after listing all findings):
 	// in this run or a later one - reads them as settled; open questions
 	// become ask-user findings, which is what parks the step in
 	// waiting-on-answers. The step never completes on its own with a question
-	// open; a human's approval still can, and the PR body says so.
+	// open; a human's approval still can, and the managed validation comment
+	// says so.
 	// Keyed on askDir, not the read dir: emitting a question finding is what
 	// PARKS the step, and a repository that has turned the conversation off
 	// must not have a fresh review inherit questions an earlier run asked.

@@ -33,8 +33,9 @@ func reviewConversationEnabled(sctx *pipeline.StepContext) bool {
 // Empty is the off-switch for ASKING, and every ask-side consumer keys on it:
 // the reviewer is told nothing about a question channel, no files are created,
 // no question findings are produced (which is what parks the step), the
-// settled-questions section is absent, and the PR body grows no conversation
-// group - byte for byte the behavior of a build without this feature.
+// settled-questions section is absent, and the managed validation comment grows
+// no conversation group - byte for byte the behavior of a build without this
+// feature.
 //
 // Whether a conversation that already EXISTS may be read and answered is a
 // separate question, owned by reviewConversationReadDir below.
@@ -349,7 +350,7 @@ func recordAnsweredQuestions(sctx *pipeline.StepContext, conv reviewqa.Conversat
 	// One row per settled ASK, not per id: an agent reuses an id, so a later
 	// ask of "q1" is a different question a human answered separately, and
 	// writing only the latest state would erase the earlier decision from the
-	// do-not-re-raise set and from the PR body.
+	// do-not-re-raise set and from the managed validation comment.
 	for _, ask := range conv.SettledAsks() {
 		err := sctx.DB.RecordReviewAnswer(db.ReviewAnswer{
 			RepoID:     sctx.Repo.ID,
@@ -381,8 +382,8 @@ func recordAnsweredQuestions(sctx *pipeline.StepContext, conv reviewqa.Conversat
 // of magnitude over the 1 MiB frame once each becomes a finding. The prompt
 // sections have the same shape, and every sibling channel in this package is
 // already bounded (db.MaxBranchReviewAnswers for settled questions,
-// maxPublishedConversationEntries/Chars for the PR body), so these are the
-// outliers rather than a new policy.
+// maxPublishedConversationEntries/Chars for the managed validation comment),
+// so these are the outliers rather than a new policy.
 //
 // Same remedy as maxReviewBotCommentFindings in ci_findings.go, but it degrades
 // differently, because a review question needs an answer before the gate can

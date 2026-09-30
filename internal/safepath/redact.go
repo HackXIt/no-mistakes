@@ -2,9 +2,10 @@
 // out of the text a caller passes it.
 //
 // It guarantees nothing on its own about what no-mistakes publishes: coverage
-// is exactly the set of publication boundaries that call it. Today that is the
-// pull request title and body (PRStep.buildPRContent). Agent-authored commit
-// subjects, which reach the remote through the auto-fix commit path
+// is exactly the set of publication boundaries that call it. Today those are
+// the pull request title and description (redactPRContent) and the managed
+// validation comment (renderValidationCommentForPublishedHead). Agent-authored
+// commit subjects, which reach the remote through the auto-fix commit path
 // (commitAgentFixes -> Commit.RenderFixMessage), are a separate surface with a
 // different rendering and are deliberately not covered; so is the opt-in
 // evidence branch, which copies artifact files verbatim.
@@ -15,8 +16,9 @@
 // path-scrubbing helper, so there is one owner of the rules and one place a new
 // shape has to be taught.
 //
-// The rules are deliberately blunt. A false positive costs a slightly uglier
-// PR body; a false negative publishes someone's username to the internet.
+// The rules are deliberately blunt. A false positive costs slightly uglier
+// public PR content; a false negative publishes someone's username to the
+// internet.
 package safepath
 
 import (
@@ -29,12 +31,10 @@ import (
 
 // Placeholder replaces every redacted home directory prefix.
 //
-// "~" is chosen over an angle-bracketed token on purpose: the PR body is
-// assembled with HTML escaping applied before this boundary runs, so inserting
-// a literal "<home>" afterwards would be re-read as an unknown HTML tag by
-// GitHub's markdown renderer and silently disappear. "~" carries no markdown or
-// HTML meaning, and it is never longer than what it replaces, so redaction can
-// only shrink an already length-capped body.
+// "~" is chosen over an angle-bracketed token on purpose: published Markdown
+// would re-read a literal "<home>" as an unknown HTML tag and silently hide it.
+// "~" carries no Markdown or HTML meaning, and it is never longer than what it
+// replaces, so redaction can only shrink already length-capped public text.
 const Placeholder = "~"
 
 // genericHomePattern matches the conventional home roots regardless of which

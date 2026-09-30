@@ -54,8 +54,9 @@ type ReviewAnswer struct {
 // starts numbering at q1 again for a genuinely different question, and
 // reviewqa.Load correctly treats that as a re-ask rather than a correction. The
 // store has to agree, or answering the second q1 replaced the first's row and a
-// human's decision vanished from the do-not-re-raise set and from the PR body,
-// silently - which also contradicted the design doc's promise that nothing
+// human's decision vanished from the do-not-re-raise set and from the managed
+// validation comment, silently - which also contradicted the design doc's
+// promise that nothing
 // deletes these rows.
 func (d *DB) RecordReviewAnswer(a ReviewAnswer) error {
 	if a.RepoID == "" || a.Branch == "" || a.QuestionID == "" {

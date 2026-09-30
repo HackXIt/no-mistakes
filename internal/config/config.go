@@ -123,9 +123,10 @@ const (
 	DefaultEvalDiversifiedSize = 32
 	// DefaultEvidenceRetention is how long a run's on-disk evidence survives
 	// before the daemon reaps it. It is comfortably longer than typical PR
-	// review latency because a PR body references these artifacts by local path
-	// whenever publishing is off or the provider has no derivable links. This
-	// is no-mistakes' own budget: the point of owning it is that no OS temp
+	// review latency because a managed validation comment references these
+	// artifacts by local path whenever publishing is off or the provider has no
+	// derivable links. This is no-mistakes' own budget: the point of owning it
+	// is that no OS temp
 	// timer decides when a user's screenshots disappear.
 	DefaultEvidenceRetention = 14 * 24 * time.Hour
 	// DefaultEvidenceMaxRuns caps how many run directories survive regardless
@@ -869,11 +870,11 @@ type TestRaw struct {
 type EvidenceRaw struct {
 	StoreInRepo *bool `yaml:"store_in_repo"`
 	// AttachMedia uploads image and video evidence to GitHub user-attachments
-	// when the PR body is rendered. It defaults on so default-config PRs stop
-	// citing local disk paths for screenshots; set false to opt out. The
-	// orphan-branch store (store_in_repo) is independent: when both are on,
-	// the PR body carries both the commit-pinned link and the attachment.
-	// Like store_in_repo, this is pushed-readable.
+	// when detailed validation is rendered. It defaults on so default-config
+	// comments stop citing local disk paths for screenshots; set false to opt
+	// out. The orphan-branch store (store_in_repo) is independent: when both are
+	// on, the managed validation comment carries both the commit-pinned link and
+	// the attachment. Like store_in_repo, this is pushed-readable.
 	AttachMedia *bool   `yaml:"attach_media"`
 	Dir         *string `yaml:"dir"`
 	// Branch selects the orphan evidence branch. It names a git ref the
@@ -909,12 +910,12 @@ type Test struct {
 
 // Evidence is the resolved test-evidence config. When StoreInRepo is true, the
 // run publishes its evidence artifacts to the orphan Branch of the same
-// repository, under Dir, and links them from the pull request body. Evidence
-// never enters the pushed code branch, so it never reaches the default
+// repository, under Dir, and links them from the managed validation comment.
+// Evidence never enters the pushed code branch, so it never reaches the default
 // branch's history. Otherwise evidence stays on local disk under LocalRoot.
-// AttachMedia (default true) additionally uploads image and video artifacts to
-// GitHub user-attachments at PR render time so remote reviewers can open them
-// without an evidence branch. Text artifacts stay inlined or locally cited.
+// AttachMedia (default true) additionally uploads image and video artifacts when
+// detailed validation is rendered so remote reviewers can open them without an
+// evidence branch. Text artifacts stay inlined or locally cited.
 type Evidence struct {
 	StoreInRepo bool
 	AttachMedia bool
@@ -2776,9 +2777,9 @@ func applyIntentOverrides(dst *Intent, src *IntentRaw) {
 }
 
 // testDefaults returns the default test-step settings. Orphan-branch evidence
-// publication is opt-in (off by default). GitHub image/video attachments at PR
-// render time are on by default so remote reviewers can open screenshots
-// without that branch.
+// publication is opt-in (off by default). GitHub image/video attachments are on
+// by default when detailed validation is rendered so remote reviewers can open
+// screenshots without that branch.
 func testDefaults() Test {
 	return Test{
 		Evidence: Evidence{
