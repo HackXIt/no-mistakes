@@ -151,9 +151,9 @@ func newAxiRunCmd() *cobra.Command {
 			"for this run only (for example an epic branch). It overrides pr.base_branch\n" +
 			"in repo config and is persisted on the run for rebase, PR, and CI steps.\n\n" +
 			"--no-publish-intent keeps the generated public Intent section out of the\n" +
-			"PR body for this run. It is tighten-only: it can never publish intent on a\n" +
-			"repository whose trusted pr.publish_intent disabled it. The full intent\n" +
-			"still reaches every step prompt except the PR-drafting turns, which then\n" +
+			"managed validation comment for this run. It is tighten-only: it can never\n" +
+			"publish intent on a repository whose trusted pr.publish_intent disabled it.\n" +
+			"The full intent still reaches every step prompt except the PR-drafting turns,\n" +
 			"draft from the diff and commit messages only. It is persisted on the run;\n" +
 			"the global intent.publish_intent: false default applies to runs started\n" +
 			"without it. The running daemon must honor it; an older daemon is refused.\n\n" +
@@ -198,7 +198,7 @@ func newAxiRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&launchNonce, "launch-nonce", "", "opaque nonce for a daemon-bound pre-drive launch receipt")
 	cmd.Flags().StringVar(&validationGeneration, "validation-generation", "", "opaque generation bound to --launch-nonce proof mode")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "integration branch to open the PR against for this run only (overrides pr.base_branch)")
-	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the PR body for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
+	cmd.Flags().BoolVar(&noPublishIntent, "no-publish-intent", false, "keep the generated Intent section out of the managed validation comment for this run (tighten-only; full intent still reaches every step prompt except PR drafting)")
 	cmd.Flags().String("verification-plan", "", "capture a nonempty UTF-8 verification plan as separate run evidence (new runs only)")
 	bindAxiWaitFlag(cmd, &wait)
 	bindPiProfileFlags(cmd, &model, &effort)

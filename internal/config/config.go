@@ -1295,13 +1295,15 @@ intent:
 # Test-step evidence artifacts (screenshots, recordings, logs the test step
 # gathers to demonstrate the change works). By default they are kept on local
 # disk under <NM_HOME>/evidence. attach_media (default true) uploads image and
-# video artifacts to GitHub user-attachments when the PR is rendered so remote
-# reviewers can open them; text artifacts stay inlined. Opt in to
-# store_in_repo to also publish the full directory to an orphan evidence branch
-# in the same repository and link it from the PR body. The evidence branch
-# shares no history with your code branches, so artifacts never enter the
-# pushed branch or the default branch. When both are on, the PR body carries
-# both the attachment and the commit-pinned link.
+# video artifacts to GitHub user-attachments when full or collapsed validation
+# is rendered so remote reviewers can open them; minimal validation suppresses
+# media uploads and detailed evidence rendering. Opt in to store_in_repo to also
+# publish the full directory to an orphan evidence branch in the same repository;
+# its commit-pinned links appear in the managed validation comment only in full
+# or collapsed mode. The evidence branch shares no history with your code
+# branches, so artifacts never enter the pushed branch or the default branch.
+# When attach_media and store_in_repo are both on, a full or collapsed comment
+# carries both the attachment and the commit-pinned link.
 #
 # no-mistakes reaps its own evidence rather than leaving that to an OS temp
 # directory timer: retention ages run directories out (default 14 days) and

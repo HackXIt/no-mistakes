@@ -367,7 +367,7 @@ func recordAnsweredQuestions(sctx *pipeline.StepContext, conv reviewqa.Conversat
 			AnsweredAt: ask.Answer.AnsweredAt,
 		})
 		if err != nil {
-			slog.Error("failed to record a settled review question; this human decision will not reach a later reviewer or the PR body", "run_id", sctx.Run.ID, "question", ask.Question.ID, "ask", ask.Ordinal, "error", err)
+			slog.Error("failed to record a settled review question; this human decision will not reach a later reviewer or the managed validation comment", "run_id", sctx.Run.ID, "question", ask.Question.ID, "ask", ask.Ordinal, "error", err)
 		}
 	}
 }

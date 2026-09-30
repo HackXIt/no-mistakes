@@ -110,7 +110,7 @@ func publishedRunAnswers(sctx *pipeline.StepContext) []db.ReviewAnswer {
 		// A branch with nothing settled returns no rows and no error, so a
 		// failure here silently drops the answered half of the published
 		// conversation. Logged at ERROR rather than as a degradation.
-		slog.Error("failed to read the review conversation; the PR body will omit every answered question", "run_id", sctx.Run.ID, "error", err)
+		slog.Error("failed to read the review conversation; the managed validation comment will omit every answered question", "run_id", sctx.Run.ID, "error", err)
 		return nil
 	}
 	// GetBranchReviewAnswers is most-recent-first so its bound is a recency
