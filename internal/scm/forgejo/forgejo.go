@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ type Host struct {
 	cmdFactory                CmdFactory
 	available                 func(string) bool
 	executable                string
+	goos                      string
 	baseURL                   string
 	repository                string
 	tokenEnv                  string
@@ -77,6 +79,7 @@ func New(opts Options) *Host {
 		cmdFactory: opts.CommandFactory,
 		available:  available,
 		executable: executable,
+		goos:       runtime.GOOS,
 		baseURL:    strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/"),
 		repository: strings.Trim(strings.TrimSpace(opts.Repository), "/"),
 		tokenEnv:   strings.TrimSpace(opts.TokenEnv),
@@ -807,16 +810,20 @@ func (h *Host) runJSON(ctx context.Context, operation string, operationArgs []st
 	return h.runJSONWithLimit(ctx, operation, operationArgs, dst, 0)
 }
 
-func (h *Host) runJSONWithLimit(ctx context.Context, operation string, operationArgs []string, dst any, maxStdoutBytes int) error {
-	if maxStdoutBytes <= 0 {
-		maxStdoutBytes = maxForgejoOutputBytes
-	}
+func (h *Host) commandArgs(operation string, operationArgs []string) []string {
 	args := append(strings.Fields(operation), operationArgs...)
 	args = append(args, "--base-url", h.baseURL)
 	if h.tokenEnv != "" {
 		args = append(args, "--token-env", h.tokenEnv)
 	}
-	args = append(args, "--json")
+	return append(args, "--json")
+}
+
+func (h *Host) runJSONWithLimit(ctx context.Context, operation string, operationArgs []string, dst any, maxStdoutBytes int) error {
+	if maxStdoutBytes <= 0 {
+		maxStdoutBytes = maxForgejoOutputBytes
+	}
+	args := h.commandArgs(operation, operationArgs)
 	cmd := h.cmdFactory(ctx, h.executable, args...)
 	if cmd == nil {
 		return errors.New("Forgejo command runner returned a nil command")

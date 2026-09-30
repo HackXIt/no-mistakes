@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +44,7 @@ type CmdFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 type Host struct {
 	cmd          CmdFactory
 	cliAvailable func() bool
+	goos         string
 	host         string // repo's Gitea hostname; used only for error messages
 	login        string // tea login name configured for this host; scopes every tea invocation
 	repoSlug     string // "owner/repo" slug tea's --repo flag expects
@@ -62,6 +64,7 @@ func New(cmd CmdFactory, cliAvailable func() bool, host, login, repoSlug string)
 	return &Host{
 		cmd:          cmd,
 		cliAvailable: cliAvailable,
+		goos:         runtime.GOOS,
 		host:         strings.TrimSpace(host),
 		login:        strings.TrimSpace(login),
 		repoSlug:     strings.TrimSpace(repoSlug),

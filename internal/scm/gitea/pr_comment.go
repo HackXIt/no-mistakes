@@ -82,6 +82,9 @@ func (h *Host) UpdatePRComment(ctx context.Context, pr *scm.PR, commentID, body 
 
 func (h *Host) writePRComment(ctx context.Context, endpoint, method, owner, repo string, number int, id int64, body string) (scm.PRComment, error) {
 	args := []string{"api", "--login", h.login, "--method", method, "--field", "body=" + body, endpoint}
+	if err := scm.CheckWindowsCommandLine(h.goos, "tea", args); err != nil {
+		return scm.PRComment{}, fmt.Errorf("Gitea managed comment cannot be published through tea on Windows; reduce validation detail (for example, set pr.appendix: minimal) or retry from a non-Windows daemon: %w", err)
+	}
 	out, err := h.cmd(ctx, "tea", args...).CombinedOutput()
 	if err != nil {
 		return scm.PRComment{}, fmt.Errorf("tea api %s pull comment: %s: %w", strings.ToLower(method), strings.TrimSpace(string(out)), err)

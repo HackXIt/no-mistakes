@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -21,6 +22,7 @@ func TestManagedPullCommentTransport(t *testing.T) {
 	updated, _ := json.Marshal(map[string]any{"status": 200, "data": map[string]any{"id": 11, "body": body, "issue_url": issueURL, "user": map[string]any{"id": 101}}})
 	r := &fakeRecorder{responses: []fakeResponse{{stdout: string(principal)}, {stdout: string(list)}, {stdout: string(later)}, {stdout: string(empty)}, {stdout: string(created)}, {stdout: string(updated)}}}
 	host := newTestHost(r)
+	host.goos = "windows"
 	pr := &scm.PR{Number: "42", URL: testPRURL}
 	authenticated, err := host.AuthenticatedPRCommentPrincipal(context.Background())
 	if err != nil || authenticated != "101" {
@@ -51,5 +53,20 @@ func TestManagedPullCommentTransport(t *testing.T) {
 		if !reflect.DeepEqual(r.calls[i].args, want[i]) {
 			t.Fatalf("call %d = %#v, want %#v", i, r.calls[i].args, want[i])
 		}
+	}
+}
+
+func TestManagedPullCommentRefusesOversizedWindowsCommandBeforeInvocation(t *testing.T) {
+	t.Parallel()
+	r := &fakeRecorder{}
+	host := newTestHost(r)
+	host.goos = "windows"
+	pr := &scm.PR{Number: "42", URL: testPRURL}
+	_, err := host.CreatePRComment(context.Background(), pr, strings.Repeat(`"`, scm.MaxManagedPRCommentBytes))
+	if err == nil || !strings.Contains(err.Error(), "pr.appendix: minimal") || !strings.Contains(err.Error(), "Windows limit") {
+		t.Fatalf("CreatePRComment() error = %v", err)
+	}
+	if len(r.calls) != 0 {
+		t.Fatalf("forgejo-axi calls = %d, want none", len(r.calls))
 	}
 }

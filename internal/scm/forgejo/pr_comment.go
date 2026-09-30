@@ -91,11 +91,15 @@ func (h *Host) writePRComment(ctx context.Context, endpoint, method, number stri
 	payload, _ := json.Marshal(struct {
 		Body string `json:"body"`
 	}{Body: body})
+	operationArgs := []string{method, endpoint, "--data", string(payload)}
+	if err := scm.CheckWindowsCommandLine(h.goos, h.executable, h.commandArgs("api", operationArgs)); err != nil {
+		return scm.PRComment{}, fmt.Errorf("Forgejo managed comment cannot be published through forgejo-axi on Windows; reduce validation detail (for example, set pr.appendix: minimal) or retry from a non-Windows daemon: %w", err)
+	}
 	var response struct {
 		Status int                  `json:"status"`
 		Data   *forgejoIssueComment `json:"data"`
 	}
-	if err := h.runJSON(ctx, "api", []string{method, endpoint, "--data", string(payload)}, &response); err != nil {
+	if err := h.runJSON(ctx, "api", operationArgs, &response); err != nil {
 		return scm.PRComment{}, err
 	}
 	wantStatus := 201

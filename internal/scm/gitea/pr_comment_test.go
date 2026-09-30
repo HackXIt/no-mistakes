@@ -2,6 +2,8 @@ package gitea
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -28,6 +30,7 @@ func TestManagedPullCommentTransport(t *testing.T) {
 			stdout: `{"id":11,"body":"validation body","issue_url":"` + issueURL + `","user":{"id":101}}`,
 		},
 	}), nil, "gitea.example.com", "work", "owner/repo")
+	host.goos = "windows"
 	principal, err := host.AuthenticatedPRCommentPrincipal(context.Background())
 	if err != nil || principal != "101" {
 		t.Fatalf("AuthenticatedPRCommentPrincipal() = %q, %v", principal, err)
@@ -43,5 +46,23 @@ func TestManagedPullCommentTransport(t *testing.T) {
 	updated, err := host.UpdatePRComment(context.Background(), pr, "11", body)
 	if err != nil || updated.ID != "11" || updated.Body != body {
 		t.Fatalf("UpdatePRComment() = %+v, %v", updated, err)
+	}
+}
+
+func TestManagedPullCommentRefusesOversizedWindowsCommandBeforeInvocation(t *testing.T) {
+	t.Parallel()
+	called := false
+	host := New(func(context.Context, string, ...string) *exec.Cmd {
+		called = true
+		return nil
+	}, nil, "gitea.example.com", "work", "owner/repo")
+	host.goos = "windows"
+	pr := &scm.PR{Number: "7", URL: "https://gitea.example.com/owner/repo/pulls/7"}
+	_, err := host.CreatePRComment(context.Background(), pr, strings.Repeat(`"`, scm.MaxManagedPRCommentBytes))
+	if err == nil || !strings.Contains(err.Error(), "pr.appendix: minimal") || !strings.Contains(err.Error(), "Windows limit") {
+		t.Fatalf("CreatePRComment() error = %v", err)
+	}
+	if called {
+		t.Fatal("tea command was invoked for an oversized Windows command line")
 	}
 }
