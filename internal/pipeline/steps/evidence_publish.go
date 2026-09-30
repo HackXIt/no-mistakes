@@ -73,8 +73,8 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		// evidence and must never be published: the operator's questions and
 		// answers would land on the orphan branch verbatim and permanently,
 		// with none of the bounding or home-path redaction the deliberate
-		// PR-body rendering applies. The name comes from the package that owns
-		// the location, so the two cannot drift.
+		// validation-comment rendering applies. The name comes from the package
+		// that owns the location, so the two cannot drift.
 		ExcludeDirs:       []string{reviewqa.DirName},
 		Message:           fmt.Sprintf("no-mistakes: evidence for %s (run %s)", branch, sctx.Run.ID),
 		ForbiddenBranches: []string{branch, sctx.Repo.DefaultBranch},

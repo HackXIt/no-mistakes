@@ -114,9 +114,9 @@ func BuildPipelineSummary(steps []*db.StepResult, rounds map[string][]*db.StepRo
 	return BuildPipelineSummaryFor(steps, rounds, headSHA, scm.ProviderUnknown)
 }
 
-// BuildPipelineSummaryFor is BuildPipelineSummary with a host-specific body skin.
-// Unknown, GitHub, GitLab, and Azure stay on today's HTML. Bitbucket Cloud is
-// no-HTML markdown: no attestation comment, no <details>.
+// BuildPipelineSummaryFor is BuildPipelineSummary with a host-specific
+// validation-comment skin. Unknown, GitHub, GitLab, and Azure use HTML folds;
+// Bitbucket Cloud uses plain Markdown with no attestation comment or <details>.
 func BuildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string, provider scm.Provider) (string, string) {
 	return buildPipelineSummaryFor(steps, rounds, headSHA, provider, pipelineAttestationPolicy{})
 }
@@ -141,12 +141,10 @@ func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.Ste
 		line, detail := buildStepEntry(sr, stepRounds, flavor)
 		if line != "" && detail != "" {
 			// Step details quote agent text (findings, fix summaries, tested
-			// commands). A foreign attestation comment in one lands after the
-			// real marker so verify.py's first-match still resolves correctly,
-			// but keeping exactly one live marker in the body is the invariant
-			// worth holding: it survives any future reordering of this section
-			// and is what the regression asserts. The real attestation is
-			// emitted separately by buildPipelineAttestation and is untouched.
+			// commands), which can include a copied attestation. Neutralize it
+			// before this section reaches the managed validation comment. That
+			// comment strips its own summary marker, while buildPRAppendix emits
+			// the sole live marker independently in the description trailer.
 			detailBlocks = append(detailBlocks, neutralizeAttestationMarkers(detail))
 		}
 	}
@@ -175,8 +173,8 @@ func buildPipelineSummaryFor(steps []*db.StepResult, rounds map[string][]*db.Ste
 }
 
 // buildPipelineAttestation records the exact step lifecycle snapshot available
-// when no-mistakes writes the PR body. Its compact JSON is deliberately data
-// only: consumers decide their own policy from the step names and statuses.
+// when no-mistakes writes the description trailer. Its compact JSON is
+// deliberately data only: consumers decide policy from step names and statuses.
 func buildPipelineAttestation(steps []*db.StepResult, rounds map[string][]*db.StepRound, headSHA string) string {
 	return buildPipelineAttestationWithPolicy(steps, rounds, headSHA, pipelineAttestationPolicy{})
 }
@@ -1594,22 +1592,14 @@ func escapePRText(s string, flavor prBodyFlavor) string {
 	return escapePipelineFoldMarkers(html.EscapeString(s))
 }
 
-// escapePipelineFoldMarkers neutralizes the literal byte sequences a parser
-// reading the assembled PR body treats as structure, so agent-authored text
-// embedded in a finding, fix summary, tested detail, or artifact body can never
-// be mistaken for the real thing. Two parsers matter:
-//
-//   - The PR-body truncation parser (parsePipelineUpdateGroups /
-//     nextPipelineFoldStart) treats "### " and "<details>" at the start of a
-//     line as step-fold boundaries.
-//   - The require-no-mistakes compliance check
-//     (.github/actions/require-no-mistakes/verify.py) takes the FIRST
-//     attestation comment in the body and binds its head_sha to the PR head.
-//     A step agent that captures a generated PR body as evidence embeds a
-//     second attestation comment carrying that evidence run's head_sha; left
-//     intact it precedes and therefore shadows the real one, and the check
-//     fails on a head_sha mismatch for a PR the pipeline did produce. Observed
-//     on kunchenguid/no-mistakes#831, whose test evidence embedded three.
+// escapePipelineFoldMarkers neutralizes literal byte sequences the managed
+// validation-comment budget parser treats as structure, so agent-authored text
+// embedded in a finding, fix summary, tested detail, or artifact body cannot be
+// mistaken for a real section boundary. parsePipelineUpdateGroups and
+// nextPipelineFoldStart treat "### " and "<details>" at the start of a line as
+// fold boundaries. Attestation prefixes are escaped too: evidence can quote a
+// generated description, but the compact description trailer must remain the
+// sole parseable public attestation.
 func escapePipelineFoldMarkers(s string) string {
 	if s == "" {
 		return s
@@ -1629,10 +1619,9 @@ func escapePipelineFoldMarkers(s string) string {
 	return out
 }
 
-// neutralizeAttestationMarkers breaks every attestation comment prefix in
-// agent-authored PR-body prose so only the pipeline-authored marker in the
-// Pipeline section stays parseable by the compliance check, which binds the
-// first marker in the body to the PR head.
+// neutralizeAttestationMarkers breaks every attestation prefix in
+// agent-authored public prose so the compact description trailer remains the
+// sole parseable marker for the compliance check.
 func neutralizeAttestationMarkers(s string) string {
 	return strings.ReplaceAll(s, pipelineAttestationCommentPrefix, escapedPipelineAttestationCommentPrefix)
 }

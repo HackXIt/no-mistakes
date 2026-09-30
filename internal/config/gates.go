@@ -13,9 +13,9 @@ const (
 	// MaxGates is the largest number of extra gates a repository may declare.
 	MaxGates = 16
 	// MaxGateNameLen bounds a gate name so the derived step name stays short
-	// enough for the step tables, the PR body, and the attestation payload.
-	// types owns the bound because it also owns the step-name encoding the
-	// bound exists to keep short.
+	// enough for the step tables, the managed validation comment, and the
+	// attestation payload. types owns the bound because it also owns the
+	// step-name encoding the bound exists to keep short.
 	MaxGateNameLen = types.MaxCustomGateLabelLen
 )
 

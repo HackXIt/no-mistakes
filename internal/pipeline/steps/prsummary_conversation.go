@@ -38,9 +38,8 @@ const (
 // listed as unanswered rather than quietly omitted.
 func buildReviewConversationSection(sctx *pipeline.StepContext) string {
 	// Keyed on the setting, not on this run's evidence directory: a repository
-	// that turned the conversation off must publish the body it published
-	// before the feature existed, even where an earlier run left answers in the
-	// branch store.
+	// that turned the conversation off must not expose earlier branch-store
+	// answers in the managed validation comment.
 	if !reviewConversationEnabled(sctx) {
 		return ""
 	}
@@ -91,9 +90,9 @@ func buildReviewConversationSection(sctx *pipeline.StepContext) string {
 	if omitted > 0 {
 		fmt.Fprintf(&b, "\n%d further review question(s) omitted for length.\n", omitted)
 	}
-	// The conversation quotes agent and human text, so it can carry a foreign
-	// attestation marker; verify.py binds the FIRST marker in the raw body, and
-	// this section is appended after the real one.
+	// The conversation quotes agent and human text, so it can carry a copied
+	// attestation marker. Keep the managed comment from becoming a second
+	// parseable enforcement surface.
 	return neutralizeAttestationMarkers(strings.TrimRight(b.String(), "\n"))
 }
 

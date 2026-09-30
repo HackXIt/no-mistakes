@@ -34,9 +34,9 @@ func outputJSON(cmd *exec.Cmd) ([]byte, error) {
 }
 
 // clampDescription truncates body to Azure DevOps' PR-description cap. The
-// pipeline already budgets the body to fit (shedding whole sections), so this
-// is the connector-level backstop that guarantees `az repos pr create`/`update`
-// never sees an over-length description, no matter how the body was produced.
+// pipeline already budgets owned descriptions before writing, so this is the
+// connector-level backstop that guarantees `az repos pr create`/`update` never
+// sees an over-length description, no matter how the body was produced.
 func clampDescription(body string) string {
 	return scm.ClampPRBody(body, scm.MaxPRBodyChars(scm.ProviderAzureDevOps))
 }

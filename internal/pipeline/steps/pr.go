@@ -779,13 +779,10 @@ func unwrapNestedPRBody(body string) string {
 	return body
 }
 
-// appendGeneratedSections appends deterministic sections after the agent's body
-// and applies the PR body length guard.
-// prBodyBudgetPromptSection tells the drafting agent about a host's PR-body
-// character cap so it keeps its "## What Changed" section short. The Intent,
-// Risk, Testing, and Pipeline sections are appended deterministically, so the
-// agent only controls a slice of the budget; this nudge keeps that slice small.
-// Returns "" when the provider has no practical limit (bodyLimit <= 0).
+// prBodyBudgetPromptSection tells the drafting agent about a host's description
+// cap. Code appends the compact machine trailer separately, so the prompt keeps
+// the squash-commit-style narrative within its share of that budget. Returns
+// "" when the provider has no practical limit (bodyLimit <= 0).
 func prBodyBudgetPromptSection(bodyLimit int) string {
 	if bodyLimit <= 0 {
 		return ""
@@ -890,9 +887,9 @@ func splitPipelineSectionHeader(pipelineMD string) (string, string) {
 	}
 
 	headerEnd := len(heading) + introEnd + len("\n\n")
-	// The generated attestation is data, not an update detail. Keep it in the
-	// fixed header so PR-body truncation never drops the machine-readable
-	// snapshot while omitting older human-readable update rounds.
+	// The summary builder's attestation is data, not an update detail. Treat it
+	// as fixed header content when present. Managed-comment rendering strips it
+	// before budgeting; the description trailer owns the live marker separately.
 	rest = pipelineMD[headerEnd:]
 	if strings.HasPrefix(rest, pipelineAttestationCommentPrefix) {
 		if end := strings.Index(rest, pipelineAttestationCommentClosingToken); end >= 0 {

@@ -168,8 +168,8 @@ const (
 )
 
 // MaxCustomGateLabelLen bounds a gate label so the derived step name stays a
-// short, valid filename and a compact entry in the step tables, the PR body,
-// and the attestation payload.
+// short, valid filename and a compact entry in the step tables, the managed
+// validation comment, and the attestation payload.
 const MaxCustomGateLabelLen = 40
 
 // ValidCustomGateLabel reports whether label is a well-formed gate label:

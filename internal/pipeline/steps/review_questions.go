@@ -56,8 +56,8 @@ func reviewConversationDir(sctx *pipeline.StepContext) string {
 // It is deliberately not reviewConversationDir, because one flag was answering
 // two different questions. "May the reviewer ASK?" must stay keyed on
 // review.conversation: an off repository's prompt carries no question protocol,
-// creates no files, and publishes the body it published before the feature
-// existed. "May an existing conversation be READ?" has no reason to be keyed on
+// creates no files, and publishes no conversation group in the managed comment.
+// "May an existing conversation be READ?" has no reason to be keyed on
 // it at all - the questions are already on disk, the reviewer already asked
 // them, and the only thing the setting can do at that point is strand them.
 //

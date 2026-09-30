@@ -2685,8 +2685,8 @@ func EffectiveRepoConfig(pushed, trusted *RepoConfig, allowRepoCommands bool) *R
 		// settings alongside commands and agent selection. TitleFormat is a
 		// non-executing convention and remains sourced from the pushed copy.
 		// pr.template, pr.publish_intent, and pr.appendix control public
-		// narrative policy, so they remain trusted-only regardless of the
-		// commands opt-in.
+		// description or validation-comment policy, so they remain trusted-only
+		// regardless of the commands opt-in.
 		if !allowRepoCommands {
 			effective.PR.BaseBranch = trusted.PR.BaseBranch
 		}
